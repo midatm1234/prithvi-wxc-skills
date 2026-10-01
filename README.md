@@ -1,26 +1,41 @@
-# PrithviWxC Downscaling Skills
+# PrithviWxC Downscaling — OKF Knowledge Bundle
 
-Cursor Agent Skills for NASA PrithviWxC / granite-wxc weather and climate downscaling.
+Portable [Open Knowledge Format (OKF) v0.1](https://okf.md/) bundle for NASA PrithviWxC / granite-wxc weather and climate downscaling.
 
-## Skills
+Not Cursor-specific. Any agent or tool that can read markdown + YAML frontmatter can load this: clone the repo and point the agent at `index.md`.
 
-| Skill | Path | Use when |
-|-------|------|----------|
-| `downscale-wxc` | [`skills/downscale-wxc/`](./skills/downscale-wxc/) | Downscale gridded data (MERRA-2, NARR, ERA5, CORDEX, …), train, or run inference |
-| `analyze-wxc` | [`skills/analyze-wxc/`](./skills/analyze-wxc/) | Plot, summarize, compare dates, or compute climatologies from NetCDF outputs |
+## Layout
 
-## Install in Cursor
+```
+.
+├── index.md                 # start here
+├── log.md                   # changelog
+├── concepts/                # what the pipeline is
+├── playbooks/               # how to downscale / analyze
+├── tools/                   # MCP tool references
+└── constraints/             # reproducibility rules
+```
 
-Copy into your personal or project skills folder:
+## Use with any tool
+
+1. Clone this repo.
+2. Give the agent / LLM the bundle root (or paste / attach `index.md` and follow links).
+3. Playbooks describe workflows; concepts and tools provide the graph.
 
 ```bash
 git clone https://github.com/midatm1234/prithvi-wxc-skills.git
-cp -a prithvi-wxc-skills/skills/* ~/.cursor/skills/
-# or: cp -a prithvi-wxc-skills/skills/* .cursor/skills/
+# Entry point:
+#   prithvi-wxc-skills/index.md
 ```
 
-Reload the window. Skills are standard `SKILL.md` Agent Skills (YAML frontmatter + markdown).
+## Conformance
 
-## Note
+OKF v0.1 three rules:
 
-These skills describe MCP tool workflows (`load_by_date`, `create_custom_yaml`, `run_training_pipeline`, …). To actually run the pipeline you also need the companion MCP/plugin package — this repo is the skills layer only.
+1. Every concept `.md` (not `index.md` / `log.md`) has YAML frontmatter.
+2. Every frontmatter has a non-empty `type`.
+3. `index.md` and `log.md` follow the OKF listing / changelog structure.
+
+## Related
+
+Pipeline execution still needs an MCP/tool server that implements the tools named in `tools/`. This bundle is the knowledge layer you append to agents — not the runtime.
