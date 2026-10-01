@@ -1,0 +1,1077 @@
+{
+  "mcpServers": {
+    "merra2_analyzer": {
+      "command": "python3",
+      "args": [
+        "/data2/aashishp/agent/mcp/mcp_merra2_tools.py"
+      ],
+      "disabled": false
+    }
+  },
+  "tools": [
+    {
+      "name": "get_dataset_metadata",
+      "description": "Get comprehensive metadata about available datasets: date ranges (training vs inference), file counts, available variables, spatial coverage. Helps agent understand what data is available without loading specific files. Returns info about both training (pre-2016) and inference (2016+) datasets.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_available_variables",
+      "description": "Get list of all available variables in training and inference datasets by sampling the first file from each. Returns variable names and coordinates. Useful for understanding what can be analyzed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "github_repo_context",
+      "description": "Search the local granite-wxc repository for relevant snippets grounded in a query. Walks the local checkout to find and return the most relevant file excerpts. Use for conceptual questions about the model, training pipeline, config options, or data format.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Question or topic to search for in the local granite-wxc repository files"
+          },
+          "max_files": {
+            "type": "integer",
+            "description": "Maximum number of files to return snippets from",
+            "default": 6
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "load_by_date",
+      "description": "Load MERRA_PRISM dataset by date. Supports natural language dates like 'Jan 1, 2024' or 'January 1, 2024' or '20240101'. Automatically determines if date is training (before 2016) or inference (2016 onward) unless you override with dataset_type.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Date in natural format like 'Jan 1, 2024', 'January 1, 2024', '2024-01-01', '01/01/2024', or yyyymmdd like '20240101'"
+          },
+          "dataset_type": {
+            "type": "string",
+            "enum": [
+              "inference",
+              "training"
+            ],
+            "description": "Optional: Override auto-detection. If not provided, dates before 2016 load from training, dates 2016+ load from inference."
+          }
+        },
+        "required": [
+          "date"
+        ]
+      }
+    },
+    {
+      "name": "find_file_by_date",
+      "description": "Find the exact file path for a specific date without loading it. Supports natural language dates and auto-determines dataset type by year (before 2016=training, 2016+=inference).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Date in natural format like 'Jan 1, 2024' or yyyymmdd like '20240101'"
+          },
+          "dataset_type": {
+            "type": "string",
+            "enum": [
+              "inference",
+              "training"
+            ],
+            "description": "Optional: Override auto-detection by year"
+          }
+        },
+        "required": [
+          "date"
+        ]
+      }
+    },
+    {
+      "name": "list_files",
+      "description": "List all available .nc files in the inference or training directory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dataset_type": {
+            "type": "string",
+            "enum": [
+              "inference",
+              "training"
+            ],
+            "description": "Which dataset directory to list files from",
+            "default": "inference"
+          }
+        }
+      }
+    },
+    {
+      "name": "load_dataset",
+      "description": "Load a NetCDF/MERRA2 dataset from explicit file path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filepath": {
+            "type": "string",
+            "description": "Full path to the NetCDF file"
+          }
+        },
+        "required": [
+          "filepath"
+        ]
+      }
+    },
+    {
+      "name": "dataset_summary",
+      "description": "Get a comprehensive overview of the loaded dataset: dimensions, variables, coordinates, units, and descriptions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "list_variables",
+      "description": "Get a simple list of all variables in the dataset (QV, T, U, V, H, etc.)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "list_coordinates",
+      "description": "Get all dimensions and coordinate values (time, lev, lat, lon ranges).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "variable_info",
+      "description": "Get detailed statistics and metadata for a specific variable (min, max, mean, units, attributes). Optionally restrict to a spatial bounding box (e.g., LA County).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable name (e.g., 'QV', 'T', 'U', 'V', 'H')"
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name"
+        ]
+      }
+    },
+    {
+      "name": "slice_variable",
+      "description": "Extract and summarize a variable slice at specific time/level indices. Optionally restrict to a spatial bounding box (e.g., LA County).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to slice (e.g., 'T', 'QV')"
+          },
+          "time_idx": {
+            "type": "integer",
+            "description": "Time index (0 for first timestep)",
+            "default": 0
+          },
+          "lev_idx": {
+            "type": "integer",
+            "description": "Level index (0=500mb, 1=700mb, 2=850mb)",
+            "default": 0
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name"
+        ]
+      }
+    },
+    {
+      "name": "plot_variable_2d",
+      "description": "Create a publication-quality 2D map with colorbar and lat/lon axes, and return a downloadable PNG URL. Use lat_min/lat_max/lon_min/lon_max to clip the plot to a specific region (e.g., LA County: lat_min=33.3, lat_max=34.9, lon_min=-119.0, lon_max=-117.6).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to plot (e.g., predictor_T_500, predictor_QV_700, target_ppt)"
+          },
+          "time_idx": {
+            "type": "integer",
+            "description": "Time index (0 for first timestep)",
+            "default": 0
+          },
+          "lev_idx": {
+            "type": "integer",
+            "description": "Level index when variable has pressure levels",
+            "default": 0
+          },
+          "cmap": {
+            "type": "string",
+            "description": "Matplotlib colormap name (e.g., viridis, plasma, coolwarm)",
+            "default": "viridis"
+          },
+          "vmin": {
+            "type": "number",
+            "description": "Colorbar lower bound in data units. Omit for auto-scale."
+          },
+          "vmax": {
+            "type": "number",
+            "description": "Colorbar upper bound in data units. Omit for auto-scale."
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude for spatial clipping. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude for spatial clipping. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude for spatial clipping. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude for spatial clipping. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name"
+        ]
+      }
+    },
+    {
+      "name": "plot_data",
+      "description": "Create map, heatmap, line chart, or histogram plots and return downloadable PNG URLs. Use lat_min/lat_max/lon_min/lon_max to clip map/heatmap plots to a specific region (e.g., LA County: lat_min=33.3, lat_max=34.9, lon_min=-119.0, lon_max=-117.6).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to plot"
+          },
+          "plot_type": {
+            "type": "string",
+            "enum": [
+              "map",
+              "heatmap",
+              "line",
+              "histogram"
+            ],
+            "default": "map",
+            "description": "Type of scientific plot to generate"
+          },
+          "time_idx": {
+            "type": "integer",
+            "default": 0
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0
+          },
+          "cmap": {
+            "type": "string",
+            "default": "viridis",
+            "description": "Colormap for map/heatmap"
+          },
+          "bins": {
+            "type": "integer",
+            "default": 40,
+            "description": "Histogram bin count"
+          },
+          "line_axis": {
+            "type": "string",
+            "enum": [
+              "lon",
+              "lat"
+            ],
+            "default": "lon",
+            "description": "Axis used for line profile averaging"
+          },
+          "vmin": {
+            "type": "number",
+            "description": "Colorbar lower bound in data units. Omit for auto-scale."
+          },
+          "vmax": {
+            "type": "number",
+            "description": "Colorbar upper bound in data units. Omit for auto-scale."
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude for spatial clipping. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude for spatial clipping. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude for spatial clipping. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude for spatial clipping. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name"
+        ]
+      }
+    },
+    {
+      "name": "generate_workflow_image",
+      "description": "Generate an actual workflow diagram image (PNG) for training, inference, preprocessing, or a general process. Steps are auto-generated dynamically from process type, user intent (high/moderate/detailed), optional focus area, and optional YAML config context. Returns artifact URLs so the UI can render the image.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "process_type": {
+            "type": "string",
+            "description": "Workflow type: training, inference, preprocessing, or general",
+            "default": "general"
+          },
+          "detail_level": {
+            "type": "string",
+            "description": "Optional granularity: high, moderate, or detailed. If omitted, inferred from request_text.",
+            "enum": [
+              "high",
+              "moderate",
+              "detailed"
+            ]
+          },
+          "focus": {
+            "type": "string",
+            "description": "Optional focus area to emphasize: data, preprocessing, training, inference, evaluation, deployment, or model"
+          },
+          "request_text": {
+            "type": "string",
+            "description": "Optional raw user request text. Tool infers detail and focus dynamically from this when explicit fields are absent."
+          },
+          "config_path": {
+            "type": "string",
+            "description": "Optional YAML config path to inject project-specific context (variables, date ranges, epochs, batch size)."
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional custom title to display on the workflow image"
+          },
+          "steps": {
+            "type": "array",
+            "description": "Optional ordered list of workflow steps (minimum 2)",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "compute_statistics",
+      "description": "Compute descriptive statistics (min/max/mean/std/percentiles) for a variable slice. Optionally restrict to a spatial bounding box (e.g., LA County) so stats reflect only that region.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to analyze"
+          },
+          "time_idx": {
+            "type": "integer",
+            "default": 0
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name"
+        ]
+      }
+    },
+    {
+      "name": "compare_dates_difference_map",
+      "description": "Compute date_2 - date_1 for a variable, generate a diverging difference map, and return stats plus downloadable PNG URL. Optionally restrict to a spatial bounding box.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "date_1": {
+            "type": "string",
+            "description": "First date (baseline), e.g. 'Jan 1, 2025' or '20250101'"
+          },
+          "date_2": {
+            "type": "string",
+            "description": "Second date (comparison), e.g. 'Mar 1, 2025' or '20250301'"
+          },
+          "var_name": {
+            "type": "string",
+            "description": "Variable to compare, e.g. target_tmin"
+          },
+          "time_idx": {
+            "type": "integer",
+            "default": 0
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "date_1",
+          "date_2",
+          "var_name"
+        ]
+      }
+    },
+    {
+      "name": "compute_trend_timeseries",
+      "description": "Compute multi-year daily/weekly/monthly trend for a variable and return trend stats plus downloadable line-chart PNG. Optionally restrict the spatial aggregation to a bounding box.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to analyze (e.g., target_tmin)"
+          },
+          "start_date": {
+            "type": "string",
+            "description": "Start date (natural language or yyyymmdd)"
+          },
+          "end_date": {
+            "type": "string",
+            "description": "End date (natural language or yyyymmdd)"
+          },
+          "frequency": {
+            "type": "string",
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "default": "monthly",
+            "description": "Aggregation frequency for trend fitting"
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0,
+            "description": "Pressure-level index when applicable"
+          },
+          "spatial_stat": {
+            "type": "string",
+            "enum": [
+              "mean",
+              "median",
+              "min",
+              "max"
+            ],
+            "default": "mean",
+            "description": "How to aggregate each map into one value per date"
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name",
+          "start_date",
+          "end_date"
+        ]
+      }
+    },
+    {
+      "name": "compute_monthly_climatology",
+      "description": "Compute and plot monthly climatology by averaging all days in a specific month across years. Optionally restrict to a spatial bounding box.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to analyze (e.g., target_tmax for PRISM maximum temperature)"
+          },
+          "month": {
+            "type": "integer",
+            "description": "Month number (1-12: Jan=1, Feb=2, ..., Dec=12)",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0,
+            "description": "Pressure-level index when variable has multiple levels"
+          },
+          "cmap": {
+            "type": "string",
+            "default": "viridis",
+            "description": "Matplotlib colormap name (e.g., coolwarm, plasma, RdYlBu_r)"
+          },
+          "vmin": {
+            "type": "number",
+            "description": "Optional: Colorbar lower bound to fix scale across comparisons"
+          },
+          "vmax": {
+            "type": "number",
+            "description": "Optional: Colorbar upper bound to fix scale across comparisons"
+          },
+          "start_year": {
+            "type": "integer",
+            "description": "Optional: Start year to filter climatology (e.g., 2016)."
+          },
+          "end_year": {
+            "type": "integer",
+            "description": "Optional: End year to filter climatology (e.g., 2025)."
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name",
+          "month"
+        ]
+      }
+    },
+    {
+      "name": "compute_seasonal_climatology",
+      "description": "Compute and plot seasonal climatology by averaging all days in a season across all years. Optionally restrict to a spatial bounding box.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to analyze"
+          },
+          "season": {
+            "type": "string",
+            "enum": [
+              "DJF",
+              "MAM",
+              "JJA",
+              "SON"
+            ],
+            "description": "Season code: DJF=winter, MAM=spring, JJA=summer, SON=fall"
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0,
+            "description": "Pressure-level index when applicable"
+          },
+          "cmap": {
+            "type": "string",
+            "default": "viridis",
+            "description": "Matplotlib colormap name"
+          },
+          "vmin": {
+            "type": "number",
+            "description": "Optional: Colorbar lower bound"
+          },
+          "vmax": {
+            "type": "number",
+            "description": "Optional: Colorbar upper bound"
+          },
+          "start_year": {
+            "type": "integer",
+            "description": "Optional: Start year to filter climatology"
+          },
+          "end_year": {
+            "type": "integer",
+            "description": "Optional: End year to filter climatology"
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name",
+          "season"
+        ]
+      }
+    },
+    {
+      "name": "compute_period_composite",
+      "description": "Compute composite map by averaging all days in a custom date range across years. Optionally restrict to a spatial bounding box.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "description": "Variable to analyze"
+          },
+          "start_date": {
+            "type": "string",
+            "description": "Start date (month-day only): 'Jun 15', '06-15', 'June 15', or '15 Jun'"
+          },
+          "end_date": {
+            "type": "string",
+            "description": "End date (month-day only): 'Aug 15', '08-15', 'August 15', or '15 Aug'"
+          },
+          "lev_idx": {
+            "type": "integer",
+            "default": 0,
+            "description": "Pressure-level index when applicable"
+          },
+          "cmap": {
+            "type": "string",
+            "default": "viridis",
+            "description": "Matplotlib colormap name"
+          },
+          "vmin": {
+            "type": "number",
+            "description": "Optional: Colorbar lower bound"
+          },
+          "vmax": {
+            "type": "number",
+            "description": "Optional: Colorbar upper bound"
+          },
+          "start_year": {
+            "type": "integer",
+            "description": "Optional: Start year to filter composite"
+          },
+          "end_year": {
+            "type": "integer",
+            "description": "Optional: End year to filter composite"
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Southern boundary latitude. LA County \u2248 33.3."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Northern boundary latitude. LA County \u2248 34.9."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Western boundary longitude. LA County \u2248 -119.0."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Eastern boundary longitude. LA County \u2248 -117.6."
+          }
+        },
+        "required": [
+          "var_name",
+          "start_date",
+          "end_date"
+        ]
+      }
+    },
+    {
+      "name": "check_raw_data_status",
+      "description": "Inventory MERRA-2, NARR, PRISM, elevation, and CORDEX-ML files, and report which host download scripts will be used.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "YAML config used to resolve predictor_dir, target_dir, and static_elevation_file. Defaults to MERRA_PRISM.yaml."
+          },
+          "merra_dir": {
+            "type": "string",
+            "description": "Optional override for the MERRA-2 daily subset directory."
+          },
+          "prism_dir": {
+            "type": "string",
+            "description": "Optional override for the PRISM root (ppt/tmax/tmin year folders)."
+          },
+          "elevation_file": {
+            "type": "string",
+            "description": "Optional override for prism_elevation.nc."
+          }
+        }
+      }
+    },
+    {
+      "name": "start_download_job",
+      "description": "Run the bundled MERRA/NARR/PRISM/CORDEX download scripts on the machine where this MCP server is running. For files on the user's laptop, they must run MCP locally (Cursor plugin stdio or python mcp/mcp_stdio.py). A remote hosted MCP writes only on the host. Default local output: ~/prithvi-wxc-data (override with PIPELINE_DATA_ROOT).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dataset": {
+            "type": "string",
+            "enum": ["merra2", "narr", "prism", "cordex", "elevation", "all"],
+            "description": "Which input to fetch. merra2/narr/prism use the host download scripts; cordex pulls NZ/ALPS/SA zips from Zenodo 17517423.",
+            "default": "all"
+          },
+          "start_date": {
+            "type": "string",
+            "description": "Inclusive start date YYYY-MM-DD. Required for merra2, narr, prism, and all."
+          },
+          "end_date": {
+            "type": "string",
+            "description": "Inclusive end date YYYY-MM-DD. Required for merra2, narr, prism, and all."
+          },
+          "config_path": {
+            "type": "string",
+            "description": "YAML whose data.predictor_dir / target_dir / static_elevation_file are used as destinations."
+          },
+          "output_dir": {
+            "type": "string",
+            "description": "Optional override destination for MERRA-2 or PRISM files."
+          },
+          "elevation_file": {
+            "type": "string",
+            "description": "Optional override path for the written prism_elevation.nc."
+          },
+          "variables": {
+            "type": "string",
+            "description": "Comma-separated PRISM variables. Default ppt,tmax,tmin."
+          },
+          "domains": {
+            "type": "string",
+            "description": "CORDEX-ML domains to fetch from Zenodo: nz, alps, sa, or all. Default all."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Re-download files that already exist. Default false (skip existing).",
+            "default": false
+          },
+          "depends_on": {
+            "type": "string",
+            "description": "Optional job_id that must finish successfully first."
+          }
+        }
+      }
+    },
+    {
+      "name": "start_inference_job",
+      "description": "Start a model inference job as a background subprocess over the date range defined in the YAML config. Returns a job_id immediately. Use get_job_status to check progress.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Path to MERRA_PRISM YAML config. Defaults to the standard MERRA_PRISM.yaml."
+          },
+          "checkpoint": {
+            "type": "string",
+            "description": "Optional: explicit path to a trained checkpoint (.ckpt file). Auto-detected from config if omitted."
+          },
+          "batch_size": {
+            "type": "integer",
+            "description": "Inference batch size.",
+            "default": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "start_preprocessing_job",
+      "description": "Start a preprocessing/regridding job that aligns MERRA2 and PRISM data and writes NetCDF files. Returns a job_id immediately. Use get_job_status to check progress.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Path to MERRA_PRISM YAML config."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "training",
+              "inference",
+              "both"
+            ],
+            "description": "Which split to preprocess: 'training', 'inference', or 'both'.",
+            "default": "both"
+          }
+        }
+      }
+    },
+    {
+      "name": "start_compute_scalars_job",
+      "description": "Compute channel-wise mean and std normalization scalars over the training period. Must be run before training if scalars don't exist. Returns a job_id immediately.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Path to MERRA_PRISM YAML config."
+          }
+        }
+      }
+    },
+    {
+      "name": "get_job_status",
+      "description": "Get the status, metadata, and latest log output for a background job (download, training, inference, preprocessing, or compute_scalars). Pass the job_id returned by start_download_job, run_training_pipeline, start_inference_job, start_preprocessing_job, or start_compute_scalars_job.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Job ID returned by run_training_pipeline (from its jobs list), start_inference_job, start_preprocessing_job, or start_compute_scalars_job."
+          }
+        },
+        "required": [
+          "job_id"
+        ]
+      }
+    },
+    {
+      "name": "list_jobs",
+      "description": "List all known jobs (training, inference, preprocessing, compute_scalars) with their status, type, start time, and config path. Most recent jobs first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_job",
+      "description": "Cancel a running background job by sending SIGTERM to its process. Only works on jobs with status 'running'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Job ID to cancel."
+          }
+        },
+        "required": [
+          "job_id"
+        ]
+      }
+    },
+    {
+      "name": "read_yaml_config",
+      "description": "Read and summarise an existing MERRA2 YAML config file. Returns the full YAML text plus a structured summary: case_name, num_epochs, batch_size, learning_rate, dates (training/inference), predictor_variables, target_variables, spatial_subset, and num_gpus. Use this before customize_config / create_custom_yaml to inspect what a base config contains.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Absolute path (or bare filename) of the YAML config to read. Defaults to the standard MERRA_PRISM.yaml."
+          }
+        }
+      }
+    },
+    {
+      "name": "create_custom_yaml",
+      "description": "Create a customised copy of a base MERRA2 YAML config and save it to disk. Supports overriding: spatial subset (lat/lon bounds), num_epochs, batch_size, learning_rate, training/inference date ranges, num_gpus, predictor_variables (dict of var\u2192pressure-level list), target_variables (list), case_name, and arbitrary extra_overrides. Returns the saved path, a diff of all changes, and the full saved YAML text.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base_config": {
+            "type": "string",
+            "description": "Path to the base YAML config to copy from. Defaults to MERRA_PRISM.yaml."
+          },
+          "output_name": {
+            "type": "string",
+            "description": "Desired output filename (without path). Will be prefixed with 'custom_' if not already. Defaults to a timestamp-based name."
+          },
+          "lat_min": {
+            "type": "number",
+            "description": "Minimum latitude for spatial subset."
+          },
+          "lat_max": {
+            "type": "number",
+            "description": "Maximum latitude for spatial subset."
+          },
+          "lon_min": {
+            "type": "number",
+            "description": "Minimum longitude for spatial subset."
+          },
+          "lon_max": {
+            "type": "number",
+            "description": "Maximum longitude for spatial subset."
+          },
+          "num_epochs": {
+            "type": "integer",
+            "description": "Number of training epochs."
+          },
+          "batch_size": {
+            "type": "integer",
+            "description": "Training batch size."
+          },
+          "learning_rate": {
+            "type": "number",
+            "description": "Initial learning rate."
+          },
+          "training_start": {
+            "type": "string",
+            "description": "Training start date (YYYY-MM-DD)."
+          },
+          "training_end": {
+            "type": "string",
+            "description": "Training end date (YYYY-MM-DD)."
+          },
+          "inference_start": {
+            "type": "string",
+            "description": "Inference start date (YYYY-MM-DD)."
+          },
+          "inference_end": {
+            "type": "string",
+            "description": "Inference end date (YYYY-MM-DD)."
+          },
+          "num_gpus": {
+            "type": "integer",
+            "description": "Number of GPUs for distributed training."
+          },
+          "predictor_variables": {
+            "type": "object",
+            "description": "Dict mapping variable name to list of pressure levels, e.g. {\"QV\": [500, 700, 850]}. Replaces the existing predictor_variables and rebuilds input_vars / vertical_pres_vars automatically."
+          },
+          "target_variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of target variable names, e.g. [\"ppt\", \"tmax\", \"tmin\"]. Replaces the existing target_variables and output_vars."
+          },
+          "case_name": {
+            "type": "string",
+            "description": "Human-readable case/experiment name."
+          },
+          "extra_overrides": {
+            "type": "object",
+            "description": "Arbitrary top-level key\u2192value overrides applied after all named parameters."
+          }
+        }
+      }
+    },
+    {
+      "name": "run_training_pipeline",
+      "description": "THE ONLY way to start training. Checks if scalars exist (skips compute_scalars if yes), checks if preprocessed data exists (skips preprocessing if yes), then queues training followed by inference in dependency order \u2014 each job starts automatically when its predecessor succeeds. All jobs are visible via list_jobs and cancellable via cancel_job. ALWAYS use this when the user asks to train / fine-tune / run training. Do not train by chaining other tools manually.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Path to YAML config (MERRA_PRISM.yaml or NARR_PRISM.yaml). Defaults to MERRA_PRISM.yaml."
+          },
+          "num_gpus": {
+            "type": "integer",
+            "description": "Number of GPUs for training.",
+            "default": 1
+          },
+          "save_every": {
+            "type": "integer",
+            "description": "Save a checkpoint every N epochs.",
+            "default": 5
+          },
+          "queue_inference": {
+            "type": "boolean",
+            "description": "Whether to queue inference after training completes. Default true.",
+            "default": true
+          }
+        }
+      }
+    },
+    {
+      "name": "get_gpu_status",
+      "description": "Return real-time GPU utilization, VRAM usage, temperature, and active compute processes for all GPUs on this machine via nvidia-smi. Use this when the user asks about GPU resources, whether GPUs are free, how much VRAM is available, or which processes are running on the GPU.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

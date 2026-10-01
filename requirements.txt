@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+xarray
+numpy
+pydantic
+python-dotenv
+matplotlib
+openai
+pyyaml
+httpx
+cartopy
+scipy
+earthaccess
+netcdf4
+pillow
+boto3
+tqdm

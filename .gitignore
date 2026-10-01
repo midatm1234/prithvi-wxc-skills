@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 .venv/
+venv/
+mcp/artifacts/*
+!mcp/artifacts/.gitkeep

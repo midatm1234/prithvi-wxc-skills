@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "prithvi-wxc-downscaling": {
+      "command": "python3",
+      "args": ["/ABS/PATH/TO/prithvi-wxc-skills/mcp/mcp_stdio.py"],
+      "cwd": "/ABS/PATH/TO/prithvi-wxc-skills",
+      "env": {
+        "PYTHONPATH": "/ABS/PATH/TO/prithvi-wxc-skills/mcp",
+        "PIPELINE_DATA_ROOT": "/ABS/PATH/TO/prithvi-wxc-data",
+        "GRANITE_WXC_REPO": "/ABS/PATH/TO/granite-wxc",
+        "GRANITE_WXC_PYTHON": "/ABS/PATH/TO/python",
+        "EARTHDATA_USERNAME": "",
+        "EARTHDATA_PASSWORD": "",
+        "PRISM_CONTACT_EMAIL": ""
+      }
+    }
+  }
+}

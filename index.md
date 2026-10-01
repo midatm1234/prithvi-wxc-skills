@@ -4,6 +4,8 @@ Agent-portable knowledge for NASA PrithviWxC / granite-wxc weather and climate d
 
 Conformant with [OKF v0.1](https://okf.md/spec).
 
+**Runtime:** executable MCP tools live in [`mcp/`](./mcp/) (`mcp_stdio.py` / `mcp_server.py`). Register them with your agent host (see `mcp.example.json` / `mcp.json`) so playbooks can download, preprocess, train, and infer — not just describe those steps.
+
 ## Concepts
 
 * [Downscaling overview](./concepts/downscaling-overview.md) - Dataset-agnostic PrithviWxC / granite-wxc downscaling stack

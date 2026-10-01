@@ -1,0 +1,39 @@
+download:
+  daily: true
+  category: pressure
+  file_period: monthly
+  variables:
+    - air
+    - hgt
+    - shum
+    - uwnd
+    - vwnd
+  start: 1995-01-01
+  end: 2025-12-31
+  out_dir: data/raw
+  workers: 2
+  retries: 20
+  timeout: 120
+
+subset:
+  enabled: true
+  out_dir: data/subset
+  remove_raw_after_subset: true
+
+  # Optional: keep only selected variables inside each NetCDF file.
+  # Leave empty or remove this key to keep every data variable in each file.
+  variables: []
+
+  # Optional: pressure-level files can be subset by level, for example: [1000, 850, 500]
+  # Leave empty to keep all pressure levels.
+  levels:
+    - 500
+    - 700
+    - 850
+
+  # Optional lat/lon bounding box. Longitudes may be -180..180 or 0..360.
+  bbox:
+    lat_min: 32.55
+    lat_max: 41.075
+    lon_min: -124.45
+    lon_max: -115.925

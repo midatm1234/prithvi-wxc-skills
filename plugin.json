@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "prithvi-wxc-downscaling",
+  "description": "Reproduce NASA PrithviWxC / granite-wxc weather downscaling with portable skills and an MCP tool server.",
+  "version": "1.0.0",
+  "author": {
+    "name": "PrithviWxC Downscaling"
+  }
+}

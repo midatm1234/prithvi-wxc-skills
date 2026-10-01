@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "prithvi-wxc-downscaling": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${CURSOR_PLUGIN_ROOT}/mcp/mcp_stdio.py"],
+      "cwd": "${CURSOR_PLUGIN_ROOT}",
+      "env": {
+        "PYTHONPATH": "${CURSOR_PLUGIN_ROOT}/mcp",
+        "PIPELINE_DATA_ROOT": "${PIPELINE_DATA_ROOT}",
+        "GRANITE_WXC_REPO": "${GRANITE_WXC_REPO}",
+        "GRANITE_WXC_PYTHON": "${GRANITE_WXC_PYTHON}",
+        "EARTHDATA_USERNAME": "${EARTHDATA_USERNAME}",
+        "EARTHDATA_PASSWORD": "${EARTHDATA_PASSWORD}",
+        "PRISM_CONTACT_EMAIL": "${PRISM_CONTACT_EMAIL}"
+      }
+    }
+  }
+}
