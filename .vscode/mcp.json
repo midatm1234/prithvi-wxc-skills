@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "prithvi-wxc-downscaling": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/bin/prithvi-mcp"
+    }
+  }
+}

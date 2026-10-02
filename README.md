@@ -26,6 +26,10 @@ claude plugin install prithvi-wxc-downscaling@prithvi-wxc
 
 Then start Claude Code and ask, for example: *"Set up this machine for Prithvi WxC downscaling"*.
 
+### VS Code
+
+Use the Claude Code extension (same plugin commands as above), GitHub Copilot in agent mode (opening this repo picks up [`.vscode/mcp.json`](.vscode/mcp.json)), or the OpenAI Codex extension. Setup for each: [docs/RUNBOOK.md#using-vs-code](docs/RUNBOOK.md#using-vs-code). Agents without skills follow [`AGENTS.md`](AGENTS.md).
+
 ### Claude Desktop, Cursor, and other MCP hosts
 
 Clone the repo and point the host at the launcher (see [`mcp.example.json`](mcp.example.json)):

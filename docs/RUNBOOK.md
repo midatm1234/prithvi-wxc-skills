@@ -187,13 +187,36 @@ Outside the data root:
 
 To put everything on another disk, set `PIPELINE_DATA_ROOT` in `~/.config/prithvi-wxc/env`. To reuse data that already exists elsewhere, set `MERRA2_DATA_DIR`, `NARR_DATA_DIR`, `PRISM_DATA_DIR`, `ELEVATION_FILE`, or `MODEL_WEIGHTS_FILE`.
 
-## Other MCP clients
+## Using VS Code
 
-Any MCP client that runs local servers can use the tools, as long as it runs on the GPU machine. Clone the repo and register the launcher:
+Run VS Code on the GPU machine, or connect to it with the Remote - SSH extension, so the server starts where the GPUs are. Create the settings file first (Install, step 3). Then set up whichever agent you use in VS Code:
+
+| Agent | Setup | What it gets |
+|---|---|---|
+| Claude Code extension | Install the extension, then run the two `claude plugin` commands from the Install section in VS Code's terminal | Tools and skills |
+| GitHub Copilot (agent mode) | Clone this repo on the GPU machine and open the folder. VS Code finds [`.vscode/mcp.json`](../.vscode/mcp.json) and offers to start the server. To use the tools from other folders, run **MCP: Add Server…** from the Command Palette, choose a stdio command, and enter the path to `bin/prithvi-mcp`. | Tools, plus the workflow in [`AGENTS.md`](../AGENTS.md) |
+| OpenAI Codex extension | Clone this repo on the GPU machine, then register the server with the command below | Tools, plus the workflow in [`AGENTS.md`](../AGENTS.md) |
 
 ```bash
-git clone https://github.com/midatm1234/prithvi-wxc-skills.git
+git clone https://github.com/midatm1234/prithvi-wxc-skills.git ~/prithvi-wxc-skills
 ```
+
+```bash
+codex mcp add prithvi-wxc-downscaling -- ~/prithvi-wxc-skills/bin/prithvi-mcp
+```
+
+That command writes this to `~/.codex/config.toml`, which you can also add by hand:
+
+```toml
+[mcp_servers.prithvi-wxc-downscaling]
+command = "/home/you/prithvi-wxc-skills/bin/prithvi-mcp"
+```
+
+Copilot and Codex don't load the Claude skills. They read [`AGENTS.md`](../AGENTS.md) when this repo is the open folder, and every MCP client receives the server's own short instructions. In Copilot, switch the chat to Agent mode so it can call tools.
+
+## Other MCP clients
+
+Any other MCP client that runs local servers works the same way: register `bin/prithvi-mcp` as a stdio server on the GPU machine. Most clients use this JSON shape:
 
 ```json
 {
@@ -205,7 +228,7 @@ git clone https://github.com/midatm1234/prithvi-wxc-skills.git
 }
 ```
 
-- These clients get the tools but not the skills. Point the agent at [`index.md`](../index.md) for the workflows.
+- These clients get the tools but not the skills. Point the agent at [`AGENTS.md`](../AGENTS.md) or [`index.md`](../index.md) for the workflows.
 - Cursor: the repo includes a Cursor plugin manifest (`.cursor-plugin/`, `mcp.json`). It hasn't been tested in Cursor yet.
 - To check a machine without any client, run `bin/prithvi-mcp --check` from the clone. It installs the server's packages if needed and prints what the machine still needs.
 - Don't run the HTTP server `mcp/mcp_server.py` on a network: it has no login and listens on all network interfaces.
@@ -214,6 +237,7 @@ git clone https://github.com/midatm1234/prithvi-wxc-skills.git
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| VS Code: the agent has no Prithvi tools | The MCP server isn't registered for that agent, or Copilot isn't in Agent mode | Follow "Using VS Code" for your agent; in Copilot, switch the chat to Agent mode |
 | Claude says the Prithvi tools aren't available yet | The first-start install is still running, or setup is blocked: no Python 3.11+, a failed install, or an error in the settings file | Ask Claude to check the setup status; it reports the cause and the fix. Install log: `~/.cache/prithvi-wxc-mcp/install.log` |
 | `/mcp` shows the server failed (plugin 2.0.0 only) | Version 2.0.0 installed its packages in a folder Claude Code never reused, so every start timed out | Update to 2.0.1 or later with the two update commands, then restart Claude Code |
 | MERRA-2 download fails with a login or 401/403 error | Missing Earthdata credentials, or GES DISC not authorized | Fill in the settings file or `~/.netrc`, authorize "NASA GESDISC DATA ARCHIVE" in the Earthdata profile, then restart Claude Code |
