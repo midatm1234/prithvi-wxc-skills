@@ -1,0 +1,74 @@
+{
+  "_comment": "Exact versions of every external input. Two machines that use the same pins, configs, and date ranges run the same code on the same data. Bump a pin deliberately and note it in log.md.",
+  "code": {
+    "repo": "https://github.com/midatm1234/Prithvi-UNet-stocahstic.git",
+    "variants": {
+      "deterministic": {
+        "branch": "NARR_PRISM",
+        "commit": "2c3ce4ffd5d933eced2bf6136d6ead8eaf07dc1d",
+        "description": "Prithvi-UNet deterministic downscaling (MERRA_PRISM + NARR_PRISM examples)"
+      },
+      "stochastic_refinement": {
+        "branch": "Prithvi-UNet-stochastic_refinement",
+        "commit": "c65e9f3d6dc93d7ad7d439ab8216d1c85029dcdf",
+        "description": "Prithvi-UNet + diffusion / flow-matching residual refinement"
+      }
+    },
+    "default_variant": "deterministic",
+    "backbone": {
+      "repo": "https://github.com/NASA-IMPACT/Prithvi-WxC.git",
+      "commit": "79dabfcd17abe77e2d5c696707c0164a04f2ec01",
+      "package": "PrithviWxC"
+    }
+  },
+  "weights": {
+    "hf_repo": "ibm-granite/granite-geospatial-wxc-downscaling",
+    "revision": "7153a0260c482bdceb3b6edcae731321a04c8f3d",
+    "file": "ECCC/weights/best_rmse_UNET.pt",
+    "approx_bytes": 17384534215,
+    "sha256": "e15c6a55f8c04edd55f3441fc2da49013d8dfce4b63f7c0952206c268e01b02d",
+    "description": "Prithvi WxC 2.3B backbone fine-tuned for downscaling; used as path_model_weights"
+  },
+  "data": {
+    "merra2": {
+      "collection": "M2I3NPASM",
+      "version": "5.12.4",
+      "provider": "NASA GES DISC via earthaccess (HTTPS outside us-west-2)",
+      "auth": "NASA Earthdata Login"
+    },
+    "narr": {
+      "source": "https://psl.noaa.gov/thredds/fileServer/Datasets/NARR",
+      "provider": "NOAA PSL",
+      "auth": "none"
+    },
+    "prism": {
+      "source": "https://services.nacse.org/prism/data/get",
+      "dataset": "an",
+      "resolution": "800m",
+      "format": "nc",
+      "provider": "PRISM Group, Oregon State University",
+      "auth": "none",
+      "note": "PRISM AN grids are revised as new station data arrive; record download dates in the run manifest."
+    },
+    "cordex_ml_bench": {
+      "zenodo_record": "17517423",
+      "doi": "10.5281/zenodo.17517423"
+    },
+    "elevation": {
+      "file": "prism_elevation.nc",
+      "sha256": "c06241d51da3f567fe7f9a6e1555e7029561fdf0a2e4199b7fe4ea190d3c41d5",
+      "bytes": 44075327,
+      "url": "https://zenodo.org/records/23096854/files/prism_elevation.nc?download=1",
+      "source": "Copernicus DEM GLO-30 public COGs regridded to the PRISM 30 arc-second grid (source grid prism_ppt_us_30s_19960101.nc)",
+      "fallback": "NOAA ETOPO 2022 30 arc-second surface, bilinear to the PRISM grid. Used only when no url is pinned; not identical to the reference file, so runs using it are marked non-reproducible.",
+      "doi": "10.5281/zenodo.23096854"
+    }
+  },
+  "environment": {
+    "python": "3.14",
+    "torch": "2.12.0+cu130",
+    "cuda": "13.0",
+    "lock_file": "env/training-requirements.lock.txt",
+    "torch_index_url": "https://download.pytorch.org/whl/cu130"
+  }
+}

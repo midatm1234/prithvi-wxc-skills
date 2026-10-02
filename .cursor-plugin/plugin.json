@@ -1,0 +1,46 @@
+{
+  "name": "prithvi-wxc-downscaling",
+  "version": "2.0.0",
+  "description": "Reproducible Prithvi WxC downscaling on your own machine: download MERRA-2/NARR/PRISM/elevation/weights, train, infer, analyze, and replay runs through MCP tools.",
+  "author": {
+    "name": "midatm1234",
+    "url": "https://github.com/midatm1234"
+  },
+  "keywords": [
+    "climate",
+    "downscaling",
+    "mcp",
+    "merra2",
+    "narr",
+    "netcdf",
+    "prism",
+    "prithvi",
+    "reproducibility"
+  ],
+  "license": "Apache-2.0",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "PIPELINE_DATA_ROOT": {
+        "type": "string",
+        "title": "Local data directory",
+        "description": "Where data, pinned code, the training env, and run manifests live on YOUR computer. Default ~/prithvi-wxc-data."
+      },
+      "EARTHDATA_USERNAME": {
+        "type": "string",
+        "title": "NASA Earthdata username",
+        "description": "Required to download MERRA-2 M2I3NPASM from GES DISC."
+      },
+      "EARTHDATA_PASSWORD": {
+        "type": "string",
+        "title": "NASA Earthdata password",
+        "description": "Required to download MERRA-2. Not stored in the plugin; set in Plugins \u2192 Configure."
+      },
+      "PRISM_CONTACT_EMAIL": {
+        "type": "string",
+        "title": "PRISM contact email",
+        "description": "Optional identity string sent with PRISM web-service downloads."
+      }
+    }
+  }
+}

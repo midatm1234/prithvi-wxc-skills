@@ -1,0 +1,16 @@
+{
+  "name": "prithvi-wxc",
+  "owner": {
+    "name": "midatm1234"
+  },
+  "metadata": {
+    "description": "Agent plugins for reproducible Prithvi WxC weather and climate downscaling."
+  },
+  "plugins": [
+    {
+      "name": "prithvi-wxc-downscaling",
+      "source": "./",
+      "description": "Download MERRA-2/NARR/PRISM/elevation/weights, train, infer, analyze, and replay Prithvi WxC downscaling runs on your own machine."
+    }
+  ]
+}

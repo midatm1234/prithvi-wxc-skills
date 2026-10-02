@@ -1,14 +1,49 @@
 {
-  "mcpServers": {
-    "merra2_analyzer": {
-      "command": "python3",
-      "args": [
-        "/data2/aashishp/agent/mcp/mcp_merra2_tools.py"
-      ],
-      "disabled": false
-    }
-  },
   "tools": [
+    {
+      "name": "check_environment",
+      "description": "First call on any machine. Reports data root, disk, GPUs, code checkout vs pinned commit, training Python (torch/CUDA/granitewxc), credentials, and what data exists, then returns ordered next_steps naming the tool that fixes each gap.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include_training_python": {
+            "type": "boolean",
+            "description": "Probe the training interpreter (a few seconds).",
+            "default": true
+          }
+        }
+      }
+    },
+    {
+      "name": "setup_code",
+      "description": "Background job: git clone the pinned Prithvi-UNet training/inference code and check out the pinned commit (pins.json) into PIPELINE_DATA_ROOT/code. Refuses to touch a checkout with local edits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "description": "deterministic (default) | stochastic_refinement"
+          },
+          "depends_on": {
+            "type": "string",
+            "description": "Run after this job_id succeeds."
+          }
+        }
+      }
+    },
+    {
+      "name": "setup_training_env",
+      "description": "Background job: create PIPELINE_DATA_ROOT/envs/prithvi from env/training-requirements.lock.txt (torch 2.12 cu130, PrithviWxC pinned) and install the pinned code into it. Jobs use it automatically. Run after setup_code.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "depends_on": {
+            "type": "string",
+            "description": "Run after this job_id succeeds (e.g. the setup_code job)."
+          }
+        }
+      }
+    },
     {
       "name": "get_dataset_metadata",
       "description": "Get comprehensive metadata about available datasets: date ranges (training vs inference), file counts, available variables, spatial coverage. Helps agent understand what data is available without loading specific files. Returns info about both training (pre-2016) and inference (2016+) datasets.",
@@ -767,79 +802,78 @@
     },
     {
       "name": "check_raw_data_status",
-      "description": "Inventory MERRA-2, NARR, PRISM, elevation, and CORDEX-ML files, and report which host download scripts will be used.",
+      "description": "Inventory predictors, PRISM targets, elevation, weights, and the code checkout under the data root; lists what is missing and which download fixes it.",
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "config_path": {
-            "type": "string",
-            "description": "YAML config used to resolve predictor_dir, target_dir, and static_elevation_file. Defaults to MERRA_PRISM.yaml."
-          },
-          "merra_dir": {
-            "type": "string",
-            "description": "Optional override for the MERRA-2 daily subset directory."
-          },
-          "prism_dir": {
-            "type": "string",
-            "description": "Optional override for the PRISM root (ppt/tmax/tmin year folders)."
-          },
-          "elevation_file": {
-            "type": "string",
-            "description": "Optional override for prism_elevation.nc."
-          }
-        }
+        "properties": {}
       }
     },
     {
       "name": "start_download_job",
-      "description": "Run the bundled MERRA/NARR/PRISM/CORDEX download scripts on the machine where this MCP server is running. For files on the user's laptop, they must run MCP locally (Cursor plugin stdio or python mcp/mcp_stdio.py). A remote hosted MCP writes only on the host. Default local output: ~/prithvi-wxc-data (override with PIPELINE_DATA_ROOT).",
+      "description": "Download or set up one pipeline input as a background job on the machine running this MCP server (files land under PIPELINE_DATA_ROOT, default ~/prithvi-wxc-data). Versions come from pins.json. merra2 needs NASA Earthdata credentials; weights is ~17.4 GB and sha256-verified. Poll get_job_status.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "dataset": {
             "type": "string",
-            "enum": ["merra2", "narr", "prism", "cordex", "elevation", "all"],
-            "description": "Which input to fetch. merra2/narr/prism use the host download scripts; cordex pulls NZ/ALPS/SA zips from Zenodo 17517423.",
-            "default": "all"
+            "description": "merra2 | narr | prism | elevation | weights | code | env | cordex | all (= merra2+prism+elevation+weights)",
+            "enum": [
+              "merra2",
+              "narr",
+              "prism",
+              "elevation",
+              "weights",
+              "code",
+              "env",
+              "cordex",
+              "all"
+            ]
           },
           "start_date": {
             "type": "string",
-            "description": "Inclusive start date YYYY-MM-DD. Required for merra2, narr, prism, and all."
+            "description": "Inclusive start YYYY-MM-DD (merra2/narr/prism/all). Optional if config_path is given."
           },
           "end_date": {
             "type": "string",
-            "description": "Inclusive end date YYYY-MM-DD. Required for merra2, narr, prism, and all."
+            "description": "Inclusive end YYYY-MM-DD (merra2/narr/prism/all). Optional if config_path is given."
           },
           "config_path": {
             "type": "string",
-            "description": "YAML whose data.predictor_dir / target_dir / static_elevation_file are used as destinations."
+            "description": "YAML whose dates.training range is used when start/end are omitted."
           },
           "output_dir": {
             "type": "string",
-            "description": "Optional override destination for MERRA-2 or PRISM files."
+            "description": "Override destination (prism, cordex, code)."
           },
           "elevation_file": {
             "type": "string",
-            "description": "Optional override path for the written prism_elevation.nc."
+            "description": "Override destination for prism_elevation.nc."
           },
           "variables": {
             "type": "string",
-            "description": "Comma-separated PRISM variables. Default ppt,tmax,tmin."
-          },
-          "domains": {
-            "type": "string",
-            "description": "CORDEX-ML domains to fetch from Zenodo: nz, alps, sa, or all. Default all."
+            "description": "PRISM variables, comma-separated. Default ppt,tmax,tmin."
           },
           "overwrite": {
             "type": "boolean",
-            "description": "Re-download files that already exist. Default false (skip existing).",
+            "description": "Re-download even if present.",
             "default": false
+          },
+          "domains": {
+            "type": "string",
+            "description": "CORDEX domains: nz,alps,sa,all."
+          },
+          "variant": {
+            "type": "string",
+            "description": "Code variant for dataset=code: deterministic | stochastic_refinement."
           },
           "depends_on": {
             "type": "string",
-            "description": "Optional job_id that must finish successfully first."
+            "description": "Start only after this job_id succeeds."
           }
-        }
+        },
+        "required": [
+          "dataset"
+        ]
       }
     },
     {
@@ -955,7 +989,7 @@
     },
     {
       "name": "create_custom_yaml",
-      "description": "Create a customised copy of a base MERRA2 YAML config and save it to disk. Supports overriding: spatial subset (lat/lon bounds), num_epochs, batch_size, learning_rate, training/inference date ranges, num_gpus, predictor_variables (dict of var\u2192pressure-level list), target_variables (list), case_name, and arbitrary extra_overrides. Returns the saved path, a diff of all changes, and the full saved YAML text.",
+      "description": "Create a customised copy of a base MERRA2 YAML config and save it to disk. Supports overriding: spatial subset (lat/lon bounds), num_epochs, batch_size, learning_rate, training/inference date ranges, num_gpus, predictor_variables (dict of var\u2192pressure-level list), target_variables (list), case_name, and arbitrary extra_overrides. Returns the saved path, a diff of all changes, and the full saved YAML text. Input paths that do not exist on this machine are localized to PIPELINE_DATA_ROOT automatically, so always pass a base config through this tool before running it on a new machine.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1033,6 +1067,11 @@
           "extra_overrides": {
             "type": "object",
             "description": "Arbitrary top-level key\u2192value overrides applied after all named parameters."
+          },
+          "localize_paths": {
+            "type": "boolean",
+            "description": "Rewrite predictor/target/elevation/weights paths that do not exist on this machine to the local data-root layout.",
+            "default": true
           }
         }
       }
@@ -1071,6 +1110,90 @@
       "inputSchema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "preflight_check",
+      "description": "Check that a config's inputs exist for a stage (compute_scalars | preprocessing | training | inference) without starting anything. Stage tools run this automatically.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "YAML config path."
+          },
+          "stage": {
+            "type": "string",
+            "description": "Pipeline stage.",
+            "enum": [
+              "compute_scalars",
+              "preprocessing",
+              "training",
+              "inference"
+            ]
+          }
+        },
+        "required": [
+          "config_path"
+        ]
+      }
+    },
+    {
+      "name": "get_run_manifest",
+      "description": "Return the provenance manifest of a job: command, config sha256, code commit, pins, interpreter versions, input inventory, and whether the run is reproducible (with reasons if not).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Job id."
+          },
+          "path": {
+            "type": "string",
+            "description": "Or a manifest file path (e.g. one shared by a collaborator)."
+          },
+          "include_config_text": {
+            "type": "boolean",
+            "description": "Include the full YAML text and pins.",
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "name": "list_run_manifests",
+      "description": "List recent run manifests on this machine, newest first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Max rows.",
+            "default": 20
+          }
+        }
+      }
+    },
+    {
+      "name": "replay_run",
+      "description": "Re-run a recorded job on this machine from its manifest: verifies the code commit matches, rewrites the embedded config to local paths, preflights inputs, and launches the same stage. Use dry_run first to see the plan.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "manifest_path": {
+            "type": "string",
+            "description": "Path to a manifest JSON (e.g. received from another institution)."
+          },
+          "job_id": {
+            "type": "string",
+            "description": "Or a local job id."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Show the plan without launching.",
+            "default": false
+          }
+        }
       }
     }
   ]

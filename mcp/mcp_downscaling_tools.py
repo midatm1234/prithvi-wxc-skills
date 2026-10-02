@@ -27,7 +27,12 @@ from job_manager import (
     start_download_job,
     check_raw_data_status,
     run_training_pipeline,
+    setup_code,
+    setup_training_env,
+    preflight_check,
 )
+from provenance import get_run_manifest, list_run_manifests, replay_run
+from setup_tools import check_environment
 from yaml_tools import read_yaml_config, create_custom_yaml, list_available_configs
 from analyzer import MERRA2Analyzer, get_dataset_metadata, list_available_files
 
@@ -266,22 +271,41 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
             dataset=arguments.get("dataset", "all"),
             start_date=arguments.get("start_date"),
             end_date=arguments.get("end_date"),
-            config_path=arguments.get("config_path", _DEFAULT_CONFIG),
+            config_path=arguments.get("config_path"),
             output_dir=arguments.get("output_dir"),
             elevation_file=arguments.get("elevation_file"),
             variables=arguments.get("variables"),
             overwrite=bool(arguments.get("overwrite", False)),
             domains=arguments.get("domains"),
+            variant=arguments.get("variant"),
             depends_on=arguments.get("depends_on"),
         )
 
     elif tool_name == "check_raw_data_status":
-        return check_raw_data_status(
-            config_path=arguments.get("config_path", _DEFAULT_CONFIG),
-            merra_dir=arguments.get("merra_dir"),
-            prism_dir=arguments.get("prism_dir"),
-            elevation_file=arguments.get("elevation_file"),
-        )
+        return check_raw_data_status()
+
+    elif tool_name == "check_environment":
+        return check_environment(bool(arguments.get("include_training_python", True)))
+
+    elif tool_name == "setup_code":
+        return setup_code(arguments.get("variant"), arguments.get("depends_on"))
+
+    elif tool_name == "setup_training_env":
+        return setup_training_env(arguments.get("depends_on"))
+
+    elif tool_name == "preflight_check":
+        return preflight_check(arguments.get("config_path", _DEFAULT_CONFIG), arguments.get("stage", "training"))
+
+    elif tool_name == "get_run_manifest":
+        return get_run_manifest(arguments.get("job_id", ""), arguments.get("path", ""),
+                                bool(arguments.get("include_config_text", False)))
+
+    elif tool_name == "list_run_manifests":
+        return list_run_manifests(int(arguments.get("limit", 20)))
+
+    elif tool_name == "replay_run":
+        return replay_run(arguments.get("manifest_path", ""), arguments.get("job_id", ""),
+                          bool(arguments.get("dry_run", False)))
 
     elif tool_name == "get_job_status":
         return _job_manager.get_status(arguments.get("job_id", ""))
@@ -320,6 +344,7 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
             target_variables=arguments.get("target_variables"),
             case_name=arguments.get("case_name"),
             extra_overrides=arguments.get("extra_overrides"),
+            localize_paths=bool(arguments.get("localize_paths", True)),
         )
 
     elif tool_name == "run_training_pipeline":
@@ -334,7 +359,7 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
         return get_gpu_status()
 
     else:
-        return f"Unknown tool: {tool_name}"
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
 def get_gpu_status() -> str:

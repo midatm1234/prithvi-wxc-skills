@@ -13,8 +13,12 @@ Tools used by the [Downscale playbook](/playbooks/downscale-wxc.md). Exact schem
 
 | Tool | Purpose |
 |------|---------|
-| `check_raw_data_status` | Inventory local raw inputs |
-| `start_download_job` | Download MERRA-2 / NARR / PRISM / CORDEX / elevation |
+| `check_environment` | First call on a machine: GPUs, disk, code vs pin, training env, credentials, data; ordered next steps |
+| `setup_code` | Clone + check out the pinned training/inference code |
+| `setup_training_env` | Build the pinned training virtualenv |
+| `check_raw_data_status` | Inventory local inputs |
+| `start_download_job` | Download MERRA-2 / NARR / PRISM / elevation / weights / CORDEX |
+| `preflight_check` | Verify a config's inputs exist for a stage |
 | `list_available_configs` | List YAML configs under granite-wxc examples |
 | `read_yaml_config` | Read a config |
 | `create_custom_yaml` | Write a new config (do not overwrite blindly) |
@@ -25,6 +29,8 @@ Tools used by the [Downscale playbook](/playbooks/downscale-wxc.md). Exact schem
 | `start_inference_job` | Inference-only job |
 | `get_job_status` / `list_jobs` / `cancel_job` | Job lifecycle |
 | `get_gpu_status` | GPU availability |
+| `get_run_manifest` / `list_run_manifests` | Provenance of each job |
+| `replay_run` | Re-run a manifest on this machine |
 
 # Related
 

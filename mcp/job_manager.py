@@ -30,7 +30,9 @@ from config import (
     _script_dir_for_type,
     allowed_roots_message,
     path_is_allowed,
+    state_dir,
 )
+from provenance import preflight, write_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +40,11 @@ logger = logging.getLogger(__name__)
 class JobManager:
     """Launch and track background subprocess jobs (training, inference, etc.)."""
 
-    JOBS_FILE = Path(__file__).resolve().parent / "artifacts" / "jobs.json"
-    STATUS_DIR = Path(__file__).resolve().parent / "artifacts"
-    # Job logs are written under dataset-specific draft/logs directories.
-    # MERRA: <repo>/examples/MERRA_PRISM/draft/logs
-    # NARR:  <repo>/examples/NARR_PRISM/draft/logs
-    LOG_DIR = _SCRIPT_DIR / "draft" / "logs"
+    # State lives under the data root, not the plugin: hosts may install plugins
+    # read-only and replace them on update.
+    STATUS_DIR = state_dir() / "jobs"
+    JOBS_FILE = STATUS_DIR / "jobs.json"
+    LOG_DIR = state_dir() / "logs"
     _GPU_CHECK_INTERVAL = 30  # seconds between GPU availability polls
     # Fraction of GPU memory that must be free for a GPU to be considered available
     _GPU_FREE_THRESHOLD = 0.2
@@ -69,10 +70,8 @@ class JobManager:
         self._ensure_reconciler()
 
     def _log_dir_for_config(self, config_path: str) -> Path:
-        """Return draft/logs directory matching the dataset type of config_path."""
-        dataset_type = _detect_dataset_type(config_path)
-        script_dir = _script_dir_for_type(dataset_type)
-        return script_dir / "draft" / "logs"
+        """Return the log directory for the dataset type of config_path."""
+        return self.LOG_DIR / (_detect_dataset_type(config_path) if config_path else "misc")
 
     # ------------------------------------------------------------------
     # Persistence
@@ -674,6 +673,8 @@ class JobManager:
                     for i, a in enumerate(args)]
 
         for label, p in [("script", script), ("config", config_path)]:
+            if not p:
+                continue
             err = self._validate_path(p, label)
             if err:
                 return json.dumps({"status": "error", "message": err})
@@ -825,6 +826,15 @@ class JobManager:
                 self._pending_queue.append(pending)
                 self._save_jobs()
             self._ensure_watcher()
+
+        with self._lock:
+            job_record = dict(self._jobs.get(job_id, {}))
+        manifest = write_manifest(job_record, python_bin or _GRANITE_PYTHON)
+        if manifest:
+            with self._lock:
+                if job_id in self._jobs:
+                    self._jobs[job_id]["manifest"] = manifest
+                    self._save_jobs()
 
         return job_id
 
@@ -1098,6 +1108,9 @@ def start_inference_job(
     batch_size: int = 1,
     depends_on: Optional[str] = None,
 ) -> str:
+    blocked = _preflight_error(config_path, "inference", depends_on)
+    if blocked:
+        return blocked
     dataset_type = _detect_dataset_type(config_path)
     script_dir = _script_dir_for_type(dataset_type)
     script_name = "narr_prism_inference.py" if dataset_type == "narr" else "merra_prism_inference.py"
@@ -1132,6 +1145,9 @@ def start_preprocessing_job(
     mode: str = "both",
     depends_on: Optional[str] = None,
 ) -> str:
+    blocked = _preflight_error(config_path, "preprocessing", depends_on)
+    if blocked:
+        return blocked
     dataset_type = _detect_dataset_type(config_path)
     script_dir = _script_dir_for_type(dataset_type)
     script_name = "preproc_narr_prism.py" if dataset_type == "narr" else "preproc_merra_prism.py"
@@ -1163,6 +1179,9 @@ def start_compute_scalars_job(
     config_path: str = _DEFAULT_CONFIG,
     depends_on: Optional[str] = None,
 ) -> str:
+    blocked = _preflight_error(config_path, "compute_scalars", depends_on)
+    if blocked:
+        return blocked
     dataset_type = _detect_dataset_type(config_path)
     script_dir = _script_dir_for_type(dataset_type)
     script_name = "compute_scalars_narr_prism.py" if dataset_type == "narr" else "compute_scalars_merra_prism.py"
@@ -1190,59 +1209,113 @@ def start_compute_scalars_job(
     })
 
 
+DOWNLOAD_DATASETS = {
+    "merra2": "MERRA-2 M2I3NPASM via earthaccess (needs Earthdata Login)",
+    "narr": "NOAA PSL NARR pressure-level daily files",
+    "prism": "PRISM AN daily 800 m ppt/tmax/tmin",
+    "elevation": "800 m orography on the PRISM grid (reference file from Zenodo 10.5281/zenodo.23096854, sha256-verified)",
+    "weights": "Prithvi WxC downscaling weights from Hugging Face (~17.4 GB, sha256-verified)",
+    "code": "Pinned Prithvi-UNet training/inference code (git clone + checkout)",
+    "env": "Training virtualenv from env/training-requirements.lock.txt + pinned code",
+    "cordex": "CORDEX-ML-Bench from Zenodo (optional)",
+    "all": "merra2 + prism + elevation + weights",
+}
+_DATED = {"merra2", "narr", "prism", "all"}
+
+
+_ACTIVE = {"running", "waiting_for_gpu", "waiting_for_job"}
+
+
+def _overlapping_download(dataset: str, start: Optional[str], end: Optional[str]) -> Optional[str]:
+    """Return the id of an active job writing the same dataset files, if any."""
+    def _arg(args: List[str], flag: str) -> Optional[str]:
+        return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
+
+    expand = {"all": {"merra2", "prism", "elevation", "weights"}}
+    mine = expand.get(dataset, {dataset})
+    with _job_manager._lock:
+        jobs = [dict(j) for j in _job_manager._jobs.values()]
+    for job in jobs:
+        jtype = str(job.get("type", ""))
+        if job.get("status") not in _ACTIVE or not jtype.startswith("download_"):
+            continue
+        theirs = expand.get(jtype[len("download_"):], {jtype[len("download_"):]})
+        shared = mine & theirs
+        if not shared:
+            continue
+        if not shared & {"merra2", "narr", "prism"}:
+            return job["job_id"]  # undated outputs (weights, code, env, elevation): one writer at a time
+        args = job.get("args") or []
+        s2, e2 = _arg(args, "--start"), _arg(args, "--end")
+        if not (start and end and s2 and e2) or (start <= e2 and s2 <= end):
+            return job["job_id"]
+    return None
+
+
 def start_download_job(
     dataset: str = "all",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    config_path: str = _DEFAULT_CONFIG,
+    config_path: Optional[str] = None,
     output_dir: Optional[str] = None,
     elevation_file: Optional[str] = None,
     variables: Optional[str] = None,
     overwrite: bool = False,
     domains: Optional[str] = None,
+    variant: Optional[str] = None,
     depends_on: Optional[str] = None,
 ) -> str:
-    """Queue downloads using the host MERRA/NARR/PRISM scripts and Zenodo CORDEX-ML."""
+    """Queue a download/setup step from download_pipeline_data.py as a background job."""
     dataset = (dataset or "all").lower().strip()
-    allowed = {"merra2", "narr", "prism", "cordex", "elevation", "all"}
-    if dataset not in allowed:
+    if dataset not in DOWNLOAD_DATASETS:
         return json.dumps({
             "status": "error",
-            "message": f"dataset must be one of {sorted(allowed)}, got {dataset!r}",
+            "message": f"dataset must be one of {sorted(DOWNLOAD_DATASETS)}, got {dataset!r}",
         })
-    if dataset in {"merra2", "narr", "prism", "all"} and (not start_date or not end_date):
+    if config_path and not Path(config_path).exists():
+        return json.dumps({"status": "error", "message": f"config_path not found: {config_path}"})
+    if dataset in _DATED and not (start_date and end_date) and not config_path:
         return json.dumps({
             "status": "error",
-            "message": "start_date and end_date (YYYY-MM-DD) are required for merra2/narr/prism/all",
+            "message": "start_date and end_date (YYYY-MM-DD) are required for merra2/narr/prism/all "
+                       "(or pass config_path to use its dates.training range)",
+        })
+
+    overlap = _overlapping_download(dataset, start_date, end_date)
+    if overlap:
+        return json.dumps({
+            "status": "error",
+            "message": (f"Job '{overlap}' is already downloading {dataset} for overlapping dates; concurrent "
+                        "downloads of the same day clobber each other's files. Wait for it, or pass "
+                        f"depends_on='{overlap}', or use a non-overlapping range."),
         })
 
     script = str(Path(__file__).resolve().parent / "download_pipeline_data.py")
-    args = [dataset, "--config", config_path]
+    args = [dataset]
+    if config_path:
+        args += ["--config", config_path]
     if start_date:
         args += ["--start", start_date]
     if end_date:
         args += ["--end", end_date]
     if overwrite:
         args.append("--overwrite")
-    if dataset == "elevation" and elevation_file:
-        args += ["--output-file", elevation_file]
-    if dataset in {"prism"} and output_dir:
+    if output_dir:
         args += ["--output-dir", output_dir]
-    if dataset == "prism" and variables:
+    if elevation_file:
+        args += ["--output-file", elevation_file]
+    if variables:
         args += ["--variables", variables]
-    if dataset in {"cordex", "all"}:
-        if output_dir and dataset == "cordex":
-            args += ["--cordex-dir", output_dir]
-        if domains:
-            args += ["--domains", domains]
-    if dataset == "all" and elevation_file:
-        args += ["--elevation-file", elevation_file]
+    if domains:
+        args += ["--domains", domains]
+    if variant:
+        args += ["--variant", variant]
 
     result = _job_manager.start_job(
         f"download_{dataset}",
         script,
         args,
-        config_path or _DEFAULT_CONFIG,
+        config_path or "",
         depends_on=depends_on,
         python_bin=sys.executable,
         validate_config_outputs=False,
@@ -1254,67 +1327,66 @@ def start_download_job(
         job_id = result
     except (json.JSONDecodeError, AttributeError):
         job_id = result
-    status = _job_manager._jobs.get(job_id, {}).get("status", "queued")
-    scripts = {
-        "merra2": "/data/merra2/download_merra2_aws.py",
-        "narr": "/data2/NARR/download_narr.py + narr_daily_subset.yaml",
-        "prism": "/data2/PRISM/download_prism_daily_800m.ipynb",
-        "cordex": "https://zenodo.org/records/17517423",
-        "elevation": "granite examples/MERRA_PRISM/prism_elevation.nc (copy) or ETOPO fallback",
-        "all": "merra2 + narr + prism + cordex + elevation",
-    }
+    job = _job_manager._jobs.get(job_id, {})
     return json.dumps({
         "job_id": job_id,
         "type": f"download_{dataset}",
-        "status": status,
-        "uses": scripts.get(dataset, dataset),
+        "status": job.get("status", "queued"),
+        "what": DOWNLOAD_DATASETS[dataset],
+        "log_file": job.get("log_file"),
+        "manifest": job.get("manifest"),
         "message": (
-            f"Download job '{job_id}' queued ({dataset}) via {scripts.get(dataset)}. "
-            "Scripts run on THIS MCP process's machine. "
-            "For data on the user's computer, run MCP locally (plugin / mcp_stdio.py); "
-            "files then go to ~/prithvi-wxc-data or PIPELINE_DATA_ROOT. "
-            "A remote MCP cannot write to the user's disk. "
-            f"Call get_job_status with job_id='{job_id}'."
+            f"Download job '{job_id}' started ({dataset}). Files are written on the machine running "
+            "this MCP server, under PIPELINE_DATA_ROOT. "
+            f"Call get_job_status with job_id='{job_id}' to follow progress."
         ),
     })
 
 
-def check_raw_data_status(
-    config_path: str = _DEFAULT_CONFIG,
-    merra_dir: Optional[str] = None,
-    prism_dir: Optional[str] = None,
-    elevation_file: Optional[str] = None,
-) -> str:
+def setup_code(variant: Optional[str] = None, depends_on: Optional[str] = None) -> str:
+    return start_download_job(dataset="code", variant=variant, depends_on=depends_on)
+
+
+def setup_training_env(depends_on: Optional[str] = None) -> str:
+    return start_download_job(dataset="env", depends_on=depends_on)
+
+
+def preflight_check(config_path: str = _DEFAULT_CONFIG, stage: str = "training") -> str:
+    return json.dumps({"status": "ok", "config_path": config_path, "stage": stage,
+                       **preflight(config_path, stage)})
+
+
+def _preflight_error(config_path: str, stage: str, depends_on: Optional[str]) -> Optional[str]:
+    """Refuse to queue a stage whose inputs are missing, unless it waits on another job."""
+    if depends_on:
+        return None
+    check = preflight(config_path, stage)
+    if check["ok"]:
+        return None
+    return json.dumps({"status": "error", "stage": "preflight", "config_path": config_path, **check})
+
+
+def check_raw_data_status() -> str:
     from download_pipeline_data import status_report
 
-    report = status_report(
-        config_path,
-        Path(merra_dir) if merra_dir else None,
-        Path(prism_dir) if prism_dir else None,
-        Path(elevation_file) if elevation_file else None,
-    )
-    merra = report.get("merra2") or {}
-    elev = report.get("elevation") or {}
-    prism = report.get("prism") or {}
-    narr = report.get("narr") or {}
-    cordex = report.get("cordex") or {}
+    report = status_report()
     missing = []
-    if not merra.get("files"):
-        missing.append("MERRA-2 predictors")
-    if not narr.get("files"):
-        missing.append("NARR predictors")
-    if not any((prism.get(v) or {}).get("files") for v in ("ppt", "tmax", "tmin")):
-        missing.append("PRISM targets")
-    if not elev.get("exists"):
-        missing.append("static elevation")
-    if not cordex.get("nc_files"):
-        missing.append("CORDEX-ML-Bench (Zenodo 17517423)")
+    if not report["merra2"]["files"] and not report["narr"]["files"]:
+        missing.append("predictors (merra2 or narr)")
+    if not any(report["prism"][v]["files"] for v in ("ppt", "tmax", "tmin")):
+        missing.append("prism")
+    if not report["elevation"]["exists"]:
+        missing.append("elevation")
+    if not report["weights"]["complete"]:
+        missing.append("weights")
+    if not report["code"].get("is_git"):
+        missing.append("code")
     report["ready"] = not missing
     report["missing"] = missing
     report["next_step"] = (
-        "Raw inputs are present. Next: start_compute_scalars_job / start_preprocessing_job."
+        "Inputs are present. Next: create_custom_yaml (localizes paths), then run_training_pipeline."
         if not missing else
-        "Call start_download_job with dataset merra2|narr|prism|cordex|elevation|all."
+        f"Call start_download_job for: {', '.join(missing)} (use setup_code for code)."
     )
     return json.dumps({"status": "ok", **report})
 
@@ -1335,17 +1407,26 @@ def _scalars_exist(config_path: str) -> Optional[Path]:
         return None
 
     data = cfg.get("data", {}) or {}
+    repo_root = Path(config_path).resolve().parents[2]
+    case_name = cfg.get("case_name", "")
+    candidates: List[Path] = []
+
+    # Current code writes case-scoped scalars to <preprocessed_dir>/<case_name>/scalars.
+    preproc_raw = data.get("preprocessed_dir")
+    if preproc_raw and case_name:
+        preproc = Path(preproc_raw).expanduser()
+        if not preproc.is_absolute():
+            preproc = (repo_root / preproc).resolve()
+        candidates.append(preproc / case_name / "scalars")
+
     scalar_dir_raw = data.get("scalar_dir")
     if not scalar_dir_raw:
-        return None
+        return next((d for d in candidates if all((d / f).exists() for f in _SCALAR_FILES)), None)
 
-    repo_root = Path(config_path).resolve().parents[2]
     base = Path(scalar_dir_raw).expanduser()
     if not base.is_absolute():
         base = (repo_root / base).resolve()
 
-    case_name = cfg.get("case_name", "")
-    candidates: List[Path] = []
     if case_name:
         case_dir = base if base.name == case_name else base / case_name
         candidates.append(case_dir)
@@ -1405,6 +1486,10 @@ def run_training_pipeline(
       4. training               — always runs (after its dependencies)
       5. inference              — queued; waits for training to finish
     """
+    blocked = _preflight_error(config_path, "training", None)
+    if blocked:
+        return blocked
+
     jobs_submitted: List[dict] = []
     skipped: List[str] = []
     last_job_id: Optional[str] = None

@@ -57,7 +57,9 @@ def load_tools_from_config() -> list[dict]:
 
 
 TOOLS = load_tools_from_config()
-ARTIFACTS_DIR = CURRENT_DIR / "artifacts"
+from config import state_dir  # noqa: E402
+
+ARTIFACTS_DIR = state_dir() / "artifacts"
 
 # Pydantic models
 class ToolCall(BaseModel):

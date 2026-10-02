@@ -4,5 +4,3 @@ __pycache__/
 .env
 .venv/
 venv/
-mcp/artifacts/*
-!mcp/artifacts/.gitkeep

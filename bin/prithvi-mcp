@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Launch the Prithvi WxC downscaling MCP server (stdio).
+#
+#   bin/prithvi-mcp             run the server (what MCP hosts execute)
+#   bin/prithvi-mcp --install   create/refresh the server's virtualenv and exit
+#   bin/prithvi-mcp --check     install if needed, then print check_environment
+#
+# Settings and credentials are read from ~/.config/prithvi-wxc/env (override with
+# PRITHVI_WXC_ENV_FILE); see env.example. Everything printed here goes to stderr
+# because stdout carries the MCP protocol.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${PRITHVI_WXC_ENV_FILE:-$HOME/.config/prithvi-wxc/env}"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+
+VENV="${PRITHVI_MCP_VENV:-${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/prithvi-wxc-mcp}/venv}"
+REQ="$HERE/requirements.txt"
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+find_python() {
+  for candidate in "${PRITHVI_MCP_PYTHON:-}" python3.13 python3.12 python3.11 python3; do
+    [[ -n "$candidate" ]] || continue
+    if command -v "$candidate" >/dev/null 2>&1 &&
+       "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      echo "$candidate"; return 0
+    fi
+  done
+  echo "[prithvi-mcp] Python >= 3.11 is required (set PRITHVI_MCP_PYTHON)" >&2
+  return 1
+}
+
+install() {
+  local want stamp py
+  want="$(sha256 "$REQ")"
+  stamp="$VENV/.requirements.sha256"
+  if [[ -x "$VENV/bin/python" && "$(cat "$stamp" 2>/dev/null)" == "$want" ]]; then
+    return 0
+  fi
+  py="$(find_python)"
+  echo "[prithvi-mcp] installing MCP server requirements into $VENV (one time, a few minutes)" >&2
+  mkdir -p "$(dirname "$VENV")"
+  "$py" -m venv "$VENV" >&2
+  "$VENV/bin/python" -m pip install --quiet --upgrade pip >&2
+  "$VENV/bin/python" -m pip install --quiet -r "$REQ" >&2
+  echo "$want" > "$stamp"
+  echo "[prithvi-mcp] ready: $VENV" >&2
+}
+
+case "${1:-}" in
+  --install)
+    install
+    exit 0
+    ;;
+  --check)
+    install
+    exec "$VENV/bin/python" - "$HERE/mcp" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from setup_tools import check_environment
+report = json.loads(check_environment())
+print(json.dumps({k: report[k] for k in ("data_root", "ready_for_training", "next_steps", "warnings")}, indent=2))
+PY
+    ;;
+esac
+
+install
+exec "$VENV/bin/python" "$HERE/mcp/mcp_stdio.py"

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "prithvi-wxc-downscaling": {
-      "command": "/ABS/PATH/TO/prithvi-wxc-skills/bin/prithvi-mcp",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/prithvi-mcp",
       "args": []
     }
   }

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from provenance import localize_config
 from config import (
     _SCRIPT_DIR,
     _DEFAULT_CONFIG,
@@ -127,6 +128,7 @@ def create_custom_yaml(
     target_variables: Optional[list] = None,
     case_name: Optional[str] = None,
     extra_overrides: Optional[dict] = None,
+    localize_paths: bool = True,
 ) -> str:
     """Create a customised copy of a base YAML config and save it to disk.
 
@@ -279,6 +281,12 @@ def create_custom_yaml(
             old = cfg.get(k)
             if _record_change(k, old, v):
                 cfg[k] = v
+
+    # --- machine-local input paths -------------------------------------------
+    # Base configs reference the lab server's data paths; point any that do not
+    # exist here at this machine's PIPELINE_DATA_ROOT layout.
+    if localize_paths:
+        changes.extend(localize_config(cfg, str(base_path)))
 
     # If customisation resolved to a no-op, reuse the base config directly.
     if not changes:

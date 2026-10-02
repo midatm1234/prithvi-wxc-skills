@@ -35,7 +35,7 @@ from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from config import _SCRIPT_DIR, _DEFAULT_CONFIG, allowed_roots_message, path_is_allowed
+from config import PINS, _SCRIPT_DIR, _DEFAULT_CONFIG, allowed_roots_message, path_is_allowed, state_dir
 
 class MERRA2Analyzer:
     """Analyze MERRA2 NetCDF data with xarray."""
@@ -68,9 +68,9 @@ class MERRA2Analyzer:
     
     # Year threshold: before 2016 = training, 2016+ = inference
     YEAR_THRESHOLD = 2016
-    ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
-    DEFAULT_REPO = "midatm1234/granite-wxc"
-    DEFAULT_REF = "MERRA_PRISM"
+    ARTIFACTS_DIR = state_dir() / "artifacts"
+    DEFAULT_REPO = PINS["code"]["repo"].removeprefix("https://github.com/").removesuffix(".git")
+    DEFAULT_REF = PINS["code"]["variants"][PINS["code"]["default_variant"]]["commit"]
     DEFAULT_PATH = "examples/MERRA_PRISM"
 
     # Named region presets — (lat_min, lat_max, lon_min, lon_max)
@@ -678,6 +678,7 @@ class MERRA2Analyzer:
             {
                 "status": "success",
                 "filename": filename,
+                "path": str(output_path),
                 "plot_url": url,
                 "download_url": url,
             }

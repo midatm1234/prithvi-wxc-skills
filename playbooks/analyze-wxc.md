@@ -41,7 +41,7 @@ Override with `dataset_type` only when the user is explicit.
 
 # Artifacts
 
-Plots land in `mcp/artifacts/`. Report the path (and `/artifacts/{filename}` if the HTTP server is up). Do not delete artifacts. If a date is outside file coverage, report actual coverage from NetCDF metadata instead of silently clamping.
+Plots land in `<PIPELINE_DATA_ROOT>/.mcp-state/artifacts/`; tool results include the local `path`. Report it (and `/artifacts/{filename}` if the HTTP server is up). Do not delete artifacts. If a date is outside file coverage, report actual coverage from NetCDF metadata instead of silently clamping.
 
 # Related
 

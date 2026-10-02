@@ -8,12 +8,26 @@ timestamp: 2026-10-01T06:00:00Z
 
 Use MCP tools for all pipeline work. Do not invent file paths or run training by chaining shell commands when `run_training_pipeline` exists.
 
+# What must match for identical results
+
+Pinned in `mcp/pins.json` and checked automatically; any deviation is listed in the run manifest's `non_reproducible_reasons`.
+
+| Input | Pin |
+|-------|-----|
+| Training/inference code | `midatm1234/Prithvi-UNet-stocahstic` commit per variant (`setup_code`) |
+| Backbone package | `NASA-IMPACT/Prithvi-WxC` commit |
+| Pretrained weights | Hugging Face `ibm-granite/granite-geospatial-wxc-downscaling` revision + sha256 |
+| Python packages | `env/training-requirements.lock.txt` (no xesmf: reference runs used the xarray-linear regridder) |
+| Static orography | reference `prism_elevation.nc` on Zenodo (DOI 10.5281/zenodo.23096854) + sha256 |
+| MERRA-2 / NARR / PRISM | provider versions + the config's date ranges |
+
+Verified on 2026-10-01: a fresh data root downloaded through the MCP tools reproduced the lab's MERRA-2 daily subset value-for-value, and PRISM grids value-for-value (PRISM files differ only in the `history` attribute stamped at download time). Compare data by values, never by file bytes.
+
 # Path policy
 
-- New run writes go under the granite-wxc checkout (`GRANITE_WXC_REPO`).
-- Raw downloads go under `PIPELINE_DATA_ROOT` or `~/prithvi-wxc-data`.
-- Archived / historical reads may come from shared mounts when present.
-- Do **not** hardcode another machine’s absolute paths in new configs. Prefer YAML from `create_custom_yaml`.
+- Everything lives under `PIPELINE_DATA_ROOT` (default `~/prithvi-wxc-data`): data, pinned code, training env, and `.mcp-state/` (jobs, logs, manifests, plots).
+- Existing data elsewhere can be reused with `MERRA2_DATA_DIR`, `PRISM_DATA_DIR`, `NARR_DATA_DIR`, `ELEVATION_FILE`, `MODEL_WEIGHTS_FILE`.
+- Do **not** hardcode another machine’s absolute paths in new configs. Route configs through `create_custom_yaml`, which localizes missing input paths.
 
 # Pipeline order
 
@@ -27,7 +41,7 @@ Use MCP tools for all pipeline work. Do not invent file paths or run training by
 # Guardrails
 
 - Confirm `num_epochs` and `num_gpus` before training.
-- Never delete files in `mcp/artifacts/` unless the user asks.
+- Never delete outputs, logs, or manifests under `.mcp-state/` unless the user asks.
 - If a date is outside file coverage, report actual coverage from NetCDF metadata.
 - If scalars are recomputed, warn that downstream training/inference must be re-run.
 

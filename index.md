@@ -4,7 +4,7 @@ Agent-portable knowledge for NASA PrithviWxC / granite-wxc weather and climate d
 
 Conformant with [OKF v0.1](https://okf.md/spec).
 
-**Runtime:** executable MCP tools live in [`mcp/`](./mcp/) (`mcp_stdio.py` / `mcp_server.py`). Register them with your agent host (see `mcp.example.json` / `mcp.json`) so playbooks can download, preprocess, train, and infer — not just describe those steps.
+**Runtime:** executable MCP tools live in [`mcp/`](./mcp/), launched by `bin/prithvi-mcp`. Install as a Claude Code plugin, or register with any MCP host (see README), so playbooks can download, preprocess, train, infer, and replay — not just describe those steps. Claude Code skills in [`skills/`](./skills/) are thin entry points into these playbooks.
 
 ## Concepts
 
@@ -13,6 +13,8 @@ Conformant with [OKF v0.1](https://okf.md/spec).
 
 ## Playbooks
 
+* [Set up a machine](./playbooks/setup-machine.md) - Environment check, pinned code, training env, credentials
+* [Reproduce a run](./playbooks/reproduce-run.md) - Run manifests, sharing, and replay across machines
 * [Downscale weather/climate grids](./playbooks/downscale-wxc.md) - Config → scalars → preprocess → train/infer via MCP
 * [Analyze NetCDF outputs](./playbooks/analyze-wxc.md) - Load by date, stats, maps, trends, and climatologies via MCP
 
