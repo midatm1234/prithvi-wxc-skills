@@ -42,7 +42,7 @@ mkdir -p ~/.config/prithvi-wxc && cp env.example ~/.config/prithvi-wxc/env && ch
 
 Edit it: `PIPELINE_DATA_ROOT` (default `~/prithvi-wxc-data`) and, for MERRA-2 only, a free [NASA Earthdata](https://urs.earthdata.nasa.gov/) login (or a `~/.netrc` entry for `urs.earthdata.nasa.gov`). NARR, PRISM, orography, and weights need no account.
 
-The first server start creates a private virtualenv (a few minutes). To do that ahead of time and see what the machine still needs:
+On first start the server connects right away and installs its Python packages in the background (into `~/.cache/prithvi-wxc-mcp`, usually 1–3 minutes); its tools appear when the install finishes. If anything blocks setup (no Python 3.11+, a failed install, an error in the settings file), Claude can explain it through the `prithvi_setup_status` tool. To install ahead of time and see what the machine still needs, run the launcher with `--check` (for a plugin install it lives under `~/.claude/plugins/cache/prithvi-wxc/prithvi-wxc-downscaling/<version>/bin/`):
 
 ```bash
 bin/prithvi-mcp --check

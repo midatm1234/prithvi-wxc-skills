@@ -2,67 +2,159 @@
 # Launch the Prithvi WxC downscaling MCP server (stdio).
 #
 #   bin/prithvi-mcp             run the server (what MCP hosts execute)
-#   bin/prithvi-mcp --install   create/refresh the server's virtualenv and exit
-#   bin/prithvi-mcp --check     install if needed, then print check_environment
+#   bin/prithvi-mcp --install   install the server's Python packages now, in this terminal
+#   bin/prithvi-mcp --check     install if needed, then print the environment check
 #
-# Settings and credentials are read from ~/.config/prithvi-wxc/env (override with
-# PRITHVI_WXC_ENV_FILE); see env.example. Everything printed here goes to stderr
-# because stdout carries the MCP protocol.
-set -euo pipefail
+# MCP hosts give a new server only a short time to answer. When the packages
+# are not installed yet, they install in the background while a stand-in server
+# (mcp/setup_status_server.py) answers at once with a prithvi_setup_status tool
+# and hands over to the full server when the install finishes. Setup problems
+# (no suitable Python, a failed install, a broken settings file) are reported
+# through that tool instead of a bare "failed".
+#
+# Settings and credentials come from ~/.config/prithvi-wxc/env (override with
+# PRITHVI_WXC_ENV_FILE); see env.example. stdout carries the MCP protocol, so
+# everything printed here goes to stderr. Written for bash 3.2 (macOS) and up.
+set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${PRITHVI_WXC_ENV_FILE:-$HOME/.config/prithvi-wxc/env}"
+SETUP_ERROR=""
+
 if [[ -f "$ENV_FILE" ]]; then
+  env_err="$(mktemp "${TMPDIR:-/tmp}/prithvi-env.XXXXXX")"
+  set +u
   set -a
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
+  . "$ENV_FILE" 2>"$env_err"
+  env_rc=$?
   set +a
+  set -u
+  if [[ $env_rc -ne 0 || -s "$env_err" ]]; then
+    SETUP_ERROR="The settings file $ENV_FILE has an error: $(head -c 500 "$env_err")
+Fix it, then reconnect the server (/mcp in Claude Code)."
+  fi
+  rm -f "$env_err"
 fi
 
-VENV="${PRITHVI_MCP_VENV:-${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/prithvi-wxc-mcp}/venv}"
+# One location whether Claude Code or a terminal starts this script (Claude Code
+# sets CLAUDE_PLUGIN_DATA only for its own processes), so `--install` and
+# `--check` prepare the same environment the host uses.
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/prithvi-wxc-mcp"
+VENV="${PRITHVI_MCP_VENV:-$CACHE_ROOT/venv}"
+STATE_DIR="$(dirname "$VENV")"
+LOG="$STATE_DIR/install.log"
+FAILED="$STATE_DIR/install.failed"
+LOCK="$STATE_DIR/install.lock"
 REQ="$HERE/requirements.txt"
+STAMP="$VENV/.requirements.sha256"
+NO_PYTHON="The Prithvi MCP server needs Python 3.11 or newer, and none was found.
+Install one (macOS: brew install python@3.12), or install uv, which fetches Python itself:
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+To use a specific interpreter, set PRITHVI_MCP_PYTHON in $ENV_FILE.
+Then reconnect the server (/mcp in Claude Code)."
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
+ready() {
+  [[ -x "$VENV/bin/python" && "$(cat "$STAMP" 2>/dev/null)" == "$(sha256 "$REQ")" ]]
+}
+
+# Python >= 3.11: PRITHVI_MCP_PYTHON, then PATH, then the usual install
+# locations, which MCP hosts started outside a terminal often lack on PATH.
 find_python() {
-  for candidate in "${PRITHVI_MCP_PYTHON:-}" python3.13 python3.12 python3.11 python3; do
-    [[ -n "$candidate" ]] || continue
-    if command -v "$candidate" >/dev/null 2>&1 &&
-       "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-      echo "$candidate"; return 0
+  local name dir path
+  for name in "${PRITHVI_MCP_PYTHON:-}" python3.13 python3.12 python3.14 python3.11 python3; do
+    [[ -n "$name" ]] || continue
+    for dir in PATH /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" \
+               /Library/Frameworks/Python.framework/Versions/Current/bin "$HOME/.pyenv/shims"; do
+      if [[ "$dir" == PATH ]]; then
+        path="$(command -v "$name" 2>/dev/null)" || continue
+      elif [[ "$name" == /* ]]; then
+        continue
+      else
+        path="$dir/$name"
+      fi
+      [[ -n "$path" && -x "$path" ]] || continue
+      if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        echo "$path"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+find_uv() {
+  local path
+  for path in "$(command -v uv 2>/dev/null)" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" \
+              /opt/homebrew/bin/uv /usr/local/bin/uv; do
+    [[ -n "$path" && -x "$path" ]] || continue
+    if "$path" --version >/dev/null 2>&1; then
+      echo "$path"
+      return 0
     fi
   done
-  echo "[prithvi-mcp] Python >= 3.11 is required (set PRITHVI_MCP_PYTHON)" >&2
   return 1
 }
 
 install() {
-  local want stamp py
-  want="$(sha256 "$REQ")"
-  stamp="$VENV/.requirements.sha256"
-  if [[ -x "$VENV/bin/python" && "$(cat "$stamp" 2>/dev/null)" == "$want" ]]; then
-    return 0
+  local py uv
+  ready && return 0
+  py="$(find_python)" || py=""
+  uv="$(find_uv)" || uv=""
+  if [[ -z "$py" && -z "$uv" ]]; then
+    echo "[prithvi-mcp] $NO_PYTHON" >&2
+    return 1
   fi
-  py="$(find_python)"
-  echo "[prithvi-mcp] installing MCP server requirements into $VENV (one time, a few minutes)" >&2
-  mkdir -p "$(dirname "$VENV")"
-  "$py" -m venv "$VENV" >&2
-  "$VENV/bin/python" -m pip install --quiet --upgrade pip >&2
-  "$VENV/bin/python" -m pip install --quiet -r "$REQ" >&2
-  echo "$want" > "$stamp"
-  echo "[prithvi-mcp] ready: $VENV" >&2
+  echo "[prithvi-mcp] $(date): installing the MCP server's packages into $VENV" >&2
+  mkdir -p "$STATE_DIR" || return 1
+  if [[ ! -x "$VENV/bin/python" ]]; then
+    # Only ever remove a directory that is a virtualenv.
+    [[ -f "$VENV/pyvenv.cfg" ]] && rm -rf "$VENV"
+    if [[ -n "$uv" ]]; then
+      "$uv" venv --python "${py:-3.12}" "$VENV" >&2 || return 1
+    else
+      "$py" -m venv "$VENV" >&2 || return 1
+    fi
+  fi
+  if [[ -n "$uv" ]]; then
+    "$uv" pip install --python "$VENV/bin/python" -r "$REQ" >&2 || return 1
+  else
+    "$VENV/bin/python" -m pip --version >/dev/null 2>&1 || "$VENV/bin/python" -m ensurepip --upgrade >&2 || return 1
+    "$VENV/bin/python" -m pip install --upgrade pip >&2 || return 1
+    "$VENV/bin/python" -m pip install -r "$REQ" >&2 || return 1
+  fi
+  sha256 "$REQ" > "$STAMP" || return 1
+  echo "[prithvi-mcp] $(date): ready" >&2
+}
+
+start_background_install() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  if [[ -d "$LOCK" && -n "$(find "$LOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ]]; then
+    rmdir "$LOCK" 2>/dev/null  # left behind by an install that was killed
+  fi
+  mkdir "$LOCK" 2>/dev/null || return 0  # another start is already installing
+  rm -f "$FAILED"
+  : > "$LOG"
+  if [[ -n "$BOOT_PY" ]]; then
+    # Own session, so the install survives the host stopping this server.
+    "$BOOT_PY" -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+      "$BASH" "${BASH_SOURCE[0]}" --background-install >>"$LOG" 2>&1 </dev/null &
+  else
+    nohup "$BASH" "${BASH_SOURCE[0]}" --background-install >>"$LOG" 2>&1 </dev/null &
+  fi
 }
 
 case "${1:-}" in
   --install)
     install
-    exit 0
+    exit $?
     ;;
   --check)
-    install
+    install || exit 1
     exec "$VENV/bin/python" - "$HERE/mcp" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -71,7 +163,45 @@ report = json.loads(check_environment())
 print(json.dumps({k: report[k] for k in ("data_root", "ready_for_training", "next_steps", "warnings")}, indent=2))
 PY
     ;;
+  --background-install)
+    trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+    if install; then rm -f "$FAILED"; else date > "$FAILED"; fi
+    exit 0
+    ;;
 esac
 
-install
-exec "$VENV/bin/python" "$HERE/mcp/mcp_stdio.py"
+if [[ -z "$SETUP_ERROR" ]] && ready; then
+  exec "$VENV/bin/python" "$HERE/mcp/mcp_stdio.py"
+fi
+
+# Not ready: answer the host now through the stand-in server.
+PY_FOUND="$(find_python)" || PY_FOUND=""
+BOOT_PY="${PY_FOUND:-$(command -v python3 2>/dev/null)}"
+if [[ -n "$BOOT_PY" ]] && ! "$BOOT_PY" -c 'import base64, json, select' >/dev/null 2>&1; then
+  BOOT_PY=""
+fi
+
+STATE=error
+if [[ -z "$SETUP_ERROR" ]]; then
+  if [[ -n "$PY_FOUND" ]] || find_uv >/dev/null; then
+    if start_background_install; then
+      STATE=installing
+    else
+      SETUP_ERROR="Could not start installing the MCP server's packages in $STATE_DIR."
+    fi
+  else
+    SETUP_ERROR="$NO_PYTHON"
+  fi
+fi
+
+if [[ -z "$BOOT_PY" ]]; then
+  msg="$SETUP_ERROR"
+  [[ -n "$msg" ]] || msg="Installing the MCP server packages in the background (log: $LOG). Reconnect in a few minutes."
+  echo "[prithvi-mcp] $msg" >&2
+  exit 1
+fi
+
+export PRITHVI_SETUP_STATE="$STATE" PRITHVI_SETUP_MESSAGE="$SETUP_ERROR" PRITHVI_SETUP_LOG="$LOG" \
+  PRITHVI_SETUP_FAILED="$FAILED" PRITHVI_SETUP_STAMP="$STAMP" PRITHVI_SETUP_WANT="$(sha256 "$REQ")" \
+  PRITHVI_SETUP_VENV_PYTHON="$VENV/bin/python" PRITHVI_SETUP_SERVER="$HERE/mcp/mcp_stdio.py"
+exec "$BOOT_PY" "$HERE/mcp/setup_status_server.py"

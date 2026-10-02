@@ -9,9 +9,11 @@ redirected to stderr.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -114,6 +116,27 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
+class PrefixedReader:
+    """stdin with bytes already read by the setup stand-in put back in front."""
+
+    def __init__(self, prefix: bytes, stream: BinaryIO):
+        self._buf, self._stream = prefix, stream
+
+    def readline(self) -> bytes:
+        if not self._buf:
+            return self._stream.readline()
+        newline = self._buf.find(b"\n")
+        if newline >= 0:
+            line, self._buf = self._buf[: newline + 1], self._buf[newline + 1 :]
+            return line
+        line, self._buf = self._buf, b""
+        return line + self._stream.readline()
+
+    def read(self, size: int) -> bytes:
+        head, self._buf = self._buf[:size], self._buf[size:]
+        return head if len(head) == size else head + self._stream.read(size - len(head))
+
+
 def read_message(stream: BinaryIO) -> tuple[dict[str, Any] | list | None, bool] | None:
     """Return (message, framed) or None at EOF. framed=True for Content-Length input."""
     while True:
@@ -143,6 +166,13 @@ def write_message(payload: Any, framed: bool) -> None:
 def main() -> None:
     logger.info("Starting %s %s (stdio)", SERVER_NAME, SERVER_VERSION)
     stdin = sys.stdin.buffer
+    # Handed over from mcp/setup_status_server.py after a first-start install:
+    # take back the input it already read, and have the host reload the tools.
+    pending = os.environ.pop("PRITHVI_MCP_PENDING", "")
+    if pending:
+        stdin = PrefixedReader(base64.b64decode(pending), stdin)
+    if os.environ.pop("PRITHVI_MCP_RESUMED", "") == "1":
+        write_message({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}, False)
     while True:
         try:
             read = read_message(stdin)

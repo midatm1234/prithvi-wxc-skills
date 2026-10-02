@@ -1,6 +1,6 @@
 {
   "name": "prithvi-wxc-downscaling",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Reproducible Prithvi WxC downscaling on your own machine: download MERRA-2/NARR/PRISM/elevation/weights, train, run inference, analyze, and replay runs through an MCP server and agent skills.",
   "author": {
     "name": "midatm1234",

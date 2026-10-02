@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+* **Fix (v2.0.1)**: First start no longer fails in MCP hosts. If the server's packages are missing, `bin/prithvi-mcp` installs them in the background while a stand-in server (`mcp/setup_status_server.py`, standard library only) answers at once with a `prithvi_setup_status` tool, then hands over to the full server in the same session (`notifications/tools/list_changed`). Missing Python 3.11+, failed installs, and broken settings files are reported through that tool. The launcher also looks for Python in Homebrew/python.org/pyenv locations and can use uv to fetch one. The server's packages now always live in `~/.cache/prithvi-wxc-mcp` (previously Claude Code's plugin data folder, so a terminal `--check` install was invisible to Claude Code and every start reinstalled). Test: `tests/first_start.py`.
 * **Create**: Apache-2.0 `LICENSE` (matching the training code repo); plugin author set to `midatm1234`.
 * **Update**: The reference 800 m orography (`prism_elevation.nc`, Copernicus DEM GLO-30 on the PRISM grid) is published on Zenodo (DOI [10.5281/zenodo.23096854](https://doi.org/10.5281/zenodo.23096854)). `start_download_job dataset=elevation` fetches it and verifies the pinned sha256; a failed download or checksum mismatch fails the job instead of substituting other terrain. Verified on a fresh data root: identical to the lab file, run manifest reproducible.
 
