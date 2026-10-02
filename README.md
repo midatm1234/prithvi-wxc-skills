@@ -8,6 +8,8 @@ Reproduce NASA/IBM **Prithvi WxC** downscaling (NARR or MERRA-2 at 32 km → PRI
 
 Everything external is pinned in [`mcp/pins.json`](mcp/pins.json): training code commit, Prithvi WxC backbone commit, Hugging Face weights revision + sha256, the 800 m orography ([Zenodo, DOI 10.5281/zenodo.23096854](https://doi.org/10.5281/zenodo.23096854)) + sha256, and data sources. Python packages for training are pinned in [`env/training-requirements.lock.txt`](env/training-requirements.lock.txt). Every job writes a **run manifest** another machine can replay.
 
+**Step-by-step guide:** [docs/RUNBOOK.md](docs/RUNBOOK.md) covers machine requirements, install, each pipeline stage with example prompts and measured times, where every file goes, and troubleshooting.
+
 ## Install
 
 Requirements: Linux x86_64, Python ≥ 3.11, `git`. Training and inference need NVIDIA GPUs (reference: A100 80 GB, CUDA 13); downloads and analysis do not.
