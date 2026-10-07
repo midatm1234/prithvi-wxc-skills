@@ -60,7 +60,8 @@ bin/prithvi-mcp --check
 check_environment ─► setup_code ─► setup_training_env            (prithvi-setup)
 start_download_job: merra2 | narr | prism | elevation | weights    (prithvi-data)
 create_custom_yaml (localizes paths) ─► preflight_check ─►
-run_training_pipeline: scalars ─► preprocess ─► train ─► infer      (prithvi-downscale)
+run_training_pipeline: preprocess ─► scalars ─► train ─► infer ─► evaluate   (prithvi-downscale)
+  + NARR refinement_type: residual cache ─► refiner ─► ensemble ─► evaluate (prithvi-refine)
 load_by_date / plot / climatology tools                            (prithvi-analyze)
 get_run_manifest / replay_run                                      (prithvi-reproduce)
 ```

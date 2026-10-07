@@ -1,7 +1,7 @@
 ---
 type: Playbook
 title: Downscale weather/climate grids
-description: Run PrithviWxC / granite-wxc downscaling via MCP — config, scalars, preprocess, train, infer.
+description: Run PrithviWxC / granite-wxc downscaling via MCP — config, preprocess, scalars, train, tiled inference, evaluation.
 tags: [playbook, downscaling, training, inference, mcp]
 timestamp: 2026-10-01T06:00:00Z
 ---
@@ -49,20 +49,22 @@ Call `create_custom_yaml` with a `base_config` and overrides. Never overwrite an
 
 Useful knobs: `predictor_variables`, `target_variables`, date ranges, bbox, `num_epochs`, `batch_size`, `learning_rate`, `num_gpus`, `case_name`, `extra_overrides`.
 
-## 3. Compute scalars
+## 3–5. Preprocess, scalars, train, infer, evaluate
 
-`start_compute_scalars_job` with the new `config_path`. Skip if scalars already exist and inputs are unchanged. If scalars are recomputed, warn that training/inference must be re-run.
+`run_training_pipeline` (`config_path`, `num_gpus`, `save_every`, `queue_inference`, `evaluate`, `train_phase1`) queues the training repo's case-scoped order, each stage waiting on the previous one and skipped when its outputs exist:
 
-## 4. Preprocess
+1. training preprocessing (`start_preprocessing_job`, `mode: training`)
+2. training-only scalars (`start_compute_scalars_job`) — written to `<preprocessed_dir>/<case_name>/scalars/`; recomputed whenever training products are new
+3. validation preprocessing (only when `dates.validation` is set), then inference preprocessing
+4. fine-tuning — checkpoints under `checkpoint_dir/<case_name>/`
+5. tiled inference — daily NetCDF under `<inference.output_dir>/<case_name>/`
+6. evaluation (`start_evaluation_job`, `evaluate_prism_inference.py`) — RMSE, correlation, bias and boundary errors on the exact PRISM grid; CSV, JSON and PNG under `path_experiment/comparison_plots/<case_name>/`
 
-`start_preprocessing_job` with `mode: "both"` (or `"train"` / `"inference"`). Pass scalar job id via `depends_on`.
-
-## 5. Train or infer
-
-- Training: `run_training_pipeline` (`config_path`, `num_gpus`, `save_every`, `queue_inference`).
-- Inference only: `start_inference_job` (`config_path`, `checkpoint`, `batch_size`).
+Single stages: `start_preprocessing_job` (`mode: training | validation | inference`), `start_compute_scalars_job` (only after training preprocessing), `start_inference_job` (`config_path`, `checkpoint`, `batch_size`), `start_evaluation_job`. If scalars are recomputed, warn that training and inference must be re-run.
 
 Confirm `num_epochs` and `num_gpus` before training.
+
+NARR only: to add diffusion / flow-matching residual refinement on top of the fine-tuned model, follow the [refinement playbook](/playbooks/refine-narr.md).
 
 ## 6. Monitor
 
@@ -77,6 +79,7 @@ Training and inference outputs land where the config says (`path_experiment`, `i
 - [Downscaling overview](/concepts/downscaling-overview.md)
 - [YAML data model](/concepts/dataset-yaml-model.md)
 - [MCP pipeline tools](/tools/mcp-pipeline-tools.md)
+- NARR ensembles: [Refinement playbook](/playbooks/refine-narr.md)
 - [Reproducibility rules](/constraints/reproducibility.md)
 - Follow-on analysis: [Analyze playbook](/playbooks/analyze-wxc.md)
 

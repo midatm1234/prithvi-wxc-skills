@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: MCP pipeline tools
-description: MCP tools for downloads, YAML configs, scalars, preprocessing, training, inference, and jobs.
+description: MCP tools for downloads, YAML configs, preprocessing, scalars, training, inference, evaluation, NARR refinement, and jobs.
 tags: [mcp, tools, pipeline, training, inference]
 timestamp: 2026-10-01T06:00:00Z
 resource: repo://mcp/mcp-merra2-config.json
@@ -23,10 +23,14 @@ Tools used by the [Downscale playbook](/playbooks/downscale-wxc.md). Exact schem
 | `read_yaml_config` | Read a config |
 | `create_custom_yaml` | Write a new config (do not overwrite blindly) |
 | `list_files` / `find_file_by_date` / `github_repo_context` | Discover paths and repo context |
-| `start_compute_scalars_job` | Compute mean/std scalars |
-| `start_preprocessing_job` | Align / write preprocessed NetCDFs |
-| `run_training_pipeline` | Scalars→preproc→train (+ optional queued inference) |
+| `start_preprocessing_job` | Align / write preprocessed NetCDFs (`mode`: training, validation, inference) |
+| `start_compute_scalars_job` | Training-only mean/std scalars (after training preprocessing) |
+| `run_training_pipeline` | Preproc(train)→scalars→preproc(val/infer)→fine-tune→tiled inference→evaluation; NARR `refinement_type` adds Phase-2 refinement |
 | `start_inference_job` | Inference-only job |
+| `start_evaluation_job` | Evaluate inference vs PRISM on the exact grid (`evaluate_prism_inference.py`) |
+| `create_refinement_config` | NARR: write `custom_<base>_<type>.yaml` (base config + refinement sections) |
+| `start_refinement_inference_job` | NARR: ensemble inference (y_hat + r_hat, mean, spread) with a trained refiner |
+| `start_refinement_evaluation_job` | NARR: deterministic vs refined metrics (`evaluate_refinement.py`) |
 | `get_job_status` / `list_jobs` / `cancel_job` | Job lifecycle |
 | `get_gpu_status` | GPU availability |
 | `get_run_manifest` / `list_run_manifests` | Provenance of each job |
@@ -35,6 +39,7 @@ Tools used by the [Downscale playbook](/playbooks/downscale-wxc.md). Exact schem
 # Related
 
 - [Downscale playbook](/playbooks/downscale-wxc.md)
+- [Refinement playbook](/playbooks/refine-narr.md)
 - [YAML data model](/concepts/dataset-yaml-model.md)
 - Analysis side: [MCP analysis tools](/tools/mcp-analysis-tools.md)
 

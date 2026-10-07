@@ -27,6 +27,10 @@ from job_manager import (
     start_download_job,
     check_raw_data_status,
     run_training_pipeline,
+    start_evaluation_job,
+    create_refinement_config,
+    start_refinement_inference_job,
+    start_refinement_evaluation_job,
     setup_code,
     setup_training_env,
     preflight_check,
@@ -339,6 +343,8 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
             training_end=arguments.get("training_end"),
             inference_start=arguments.get("inference_start"),
             inference_end=arguments.get("inference_end"),
+            validation_start=arguments.get("validation_start"),
+            validation_end=arguments.get("validation_end"),
             num_gpus=arguments.get("num_gpus"),
             predictor_variables=arguments.get("predictor_variables"),
             target_variables=arguments.get("target_variables"),
@@ -353,6 +359,42 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
             num_gpus=int(arguments.get("num_gpus", 1)),
             save_every=int(arguments.get("save_every", 5)),
             queue_inference=bool(arguments.get("queue_inference", True)),
+            evaluate=bool(arguments.get("evaluate", True)),
+            train_phase1=bool(arguments.get("train_phase1", True)),
+            refinement_type=arguments.get("refinement_type") or None,
+            refiner_attention=bool(arguments.get("refiner_attention", True)),
+            ensemble_size=arguments.get("ensemble_size"),
+            refinement_epochs=arguments.get("refinement_epochs"),
+        )
+
+    elif tool_name == "start_evaluation_job":
+        return start_evaluation_job(
+            config_path=arguments.get("config_path", _DEFAULT_CONFIG),
+            run_label=arguments.get("run_label"),
+            depends_on=arguments.get("depends_on"),
+        )
+
+    elif tool_name == "create_refinement_config":
+        return create_refinement_config(
+            base_config=arguments.get("base_config", ""),
+            refinement_type=arguments.get("refinement_type", ""),
+            refiner_attention=bool(arguments.get("refiner_attention", True)),
+        )
+
+    elif tool_name == "start_refinement_inference_job":
+        return start_refinement_inference_job(
+            config_path=arguments.get("config_path", ""),
+            ensemble_size=arguments.get("ensemble_size"),
+            num_gpus=int(arguments.get("num_gpus", 1)),
+            split=arguments.get("split", "inference"),
+            depends_on=arguments.get("depends_on"),
+        )
+
+    elif tool_name == "start_refinement_evaluation_job":
+        return start_refinement_evaluation_job(
+            config_path=arguments.get("config_path", ""),
+            split=arguments.get("split", "inference"),
+            depends_on=arguments.get("depends_on"),
         )
 
     elif tool_name == "get_gpu_status":

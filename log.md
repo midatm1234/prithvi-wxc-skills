@@ -1,5 +1,16 @@
 # Bundle Update Log
 
+## 2026-10-06
+
+* **Fix**: `run_training_pipeline` now follows the training repo's case-scoped order — training preprocessing → training-only scalars → validation/inference preprocessing → fine-tuning → tiled inference → evaluation. It previously computed scalars before any training products existed (which fails for a new case), never preprocessed validation dates, and skipped inference preprocessing whenever training data already existed. Scalars are looked up in `<preprocessed_dir>/<case_name>/scalars/`.
+* **Create**: `start_evaluation_job` (`evaluate_prism_inference.py`: RMSE, correlation, bias, boundary errors vs PRISM); queued after inference by the pipeline (`evaluate`).
+* **Create**: NARR-only stochastic residual refinement. `run_training_pipeline` with `refinement_type` (`diffusion_unet`, `diffusion_transformer`, `flow_matching_unet`, `flow_matching_transformer`; `refiner_attention: false` for a UNet without attention blocks) writes `custom_<base>_<type>.yaml` and queues Phase-1 residual cache → refiner training (Prithvi frozen, residual y_true - y_hat) → ensemble inference (y_hat + r_hat, mean, spread) → deterministic-vs-refined evaluation. `train_phase1: false` reuses an existing Phase-1 checkpoint. New tools `create_refinement_config`, `start_refinement_inference_job`, `start_refinement_evaluation_job`. MERRA-2 has no refinement.
+* **Create**: [refine-narr playbook](./playbooks/refine-narr.md) and the `prithvi-refine` skill.
+* **Fix**: shared scripts outside `examples/<DATASET>/` (e.g. `examples/evaluate_prism_inference.py`) got the wrong repo root and `PYTHONPATH`; the root is now the directory holding `granitewxc/`.
+* **Create**: preprocessing and scalars jobs are refused when the case directory resolves outside the allowed roots (e.g. a case linked read-only from another checkout).
+* **Update**: `stochastic_refinement` pin bumped from `c65e9f3` (branch `Prithvi-UNet-stochastic_refinement`) to `7e2eb94` (branch `narr_prism`), which adds `narr_prism_phase1_cache.py`, `evaluate_refinement.py`, and `narr_prism_refinement.py` `--num-gpus` / `--split` / `--resume-existing` that the refinement stages use.
+* **Fix**: `setup_code` also localizes tracked symlinks that point inside the repo but dangle (`experiments -> artifacts/experiments` at the new pin, where `artifacts/` is an untracked per-machine link). Verified on a fresh clone: all six become local directories and the checkout stays clean.
+
 ## 2026-10-02
 
 * **Create**: VS Code support. `.vscode/mcp.json` registers the server for GitHub Copilot when the repo is opened; `AGENTS.md` gives Copilot, Codex, and other agents without skills the workflow and rules; the runbook covers the Claude Code, Copilot, and Codex extensions (Codex registration verified with `codex mcp add`).

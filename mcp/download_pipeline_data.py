@@ -329,13 +329,14 @@ def _git_lines(repo: Path, *args: str) -> List[str]:
 
 
 def _localize_external_symlinks(repo: Path) -> List[str]:
-    """Replace tracked symlinks that point outside the checkout with local directories.
+    """Replace tracked symlinks that point outside the checkout, or dangle, with local directories.
 
     Some pinned commits track symlinks such as examples/MERRA_PRISM/scalars_with_H ->
     /data/granite-wxc/...; they dangle on other machines (writes fail) and on the
-    original host send outputs into a different checkout. Each one becomes an empty
-    local directory marked skip-worktree, so the checkout still reads as clean at
-    the pinned commit.
+    original host send outputs into a different checkout. Others point inside the
+    repo at an untracked per-machine link (experiments -> artifacts/experiments)
+    that a fresh clone lacks. Each one becomes an empty local directory marked
+    skip-worktree, so the checkout still reads as clean at the pinned commit.
     """
     replaced = []
     root = repo.resolve()
@@ -350,7 +351,8 @@ def _localize_external_symlinks(repo: Path) -> List[str]:
         resolved = Path(target) if os.path.isabs(target) else (link.parent / target).resolve()
         try:
             resolved.resolve().relative_to(root)
-            continue  # symlink inside the repo is fine
+            if resolved.exists():
+                continue  # symlink inside the repo is fine
         except ValueError:
             pass
         link.unlink()

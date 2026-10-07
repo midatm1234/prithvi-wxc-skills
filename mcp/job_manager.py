@@ -3,8 +3,12 @@ Job management for MERRA2 MCP tools.
 
 Contains:
   - JobManager  — launch, monitor, queue, and cancel subprocess jobs
-  - run_training_pipeline (only training entrypoint), start_inference_job,
-    start_preprocessing_job, start_compute_scalars_job
+  - run_training_pipeline (only training entrypoint; README stage order, plus the
+    NARR-only Phase-2 stochastic residual refinement when refinement_type is set),
+    start_inference_job, start_preprocessing_job, start_compute_scalars_job,
+    start_evaluation_job, create_refinement_config, start_phase1_cache_job,
+    start_refinement_training_job, start_refinement_inference_job,
+    start_refinement_evaluation_job
   - start_training_job is internal-only (used by run_training_pipeline)
   - Module-level _job_manager singleton
 """
@@ -33,8 +37,22 @@ from config import (
     state_dir,
 )
 from provenance import preflight, write_manifest
+from yaml_tools import date_range_errors
 
 logger = logging.getLogger(__name__)
+
+
+def _repo_root_for(path: str | Path) -> Path:
+    """granite-wxc repo root for a script or config (the directory holding granitewxc/).
+
+    Most scripts live in examples/<DATASET>/, but shared ones such as
+    examples/evaluate_prism_inference.py sit one level higher.
+    """
+    resolved = Path(path).resolve()
+    for parent in resolved.parents:
+        if (parent / "granitewxc").is_dir():
+            return parent
+    return resolved.parents[2]
 
 
 class JobManager:
@@ -67,6 +85,8 @@ class JobManager:
         # resolved dynamically from the selected config path.
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
         self._load_jobs()
+        self._purge_blocked_jobs()
+        self._resolve_finished_dependencies()
         self._ensure_reconciler()
 
     def _log_dir_for_config(self, config_path: str) -> Path:
@@ -123,7 +143,7 @@ class JobManager:
             return None
         env = os.environ.copy()
         try:
-            repo_root = str(Path(script).resolve().parents[2])
+            repo_root = str(_repo_root_for(script))
             script_dir = str(Path(script).resolve().parent)
             env["PYTHONPATH"] = ":".join(
                 filter(None, [repo_root, script_dir, env.get("PYTHONPATH", "")])
@@ -158,10 +178,20 @@ class JobManager:
             "preprocessing":   f"preproc_{prefix}_prism.py",
             "compute_scalars": f"compute_scalars_{prefix}_prism.py",
         }
+        if dataset_type == "narr":
+            mapping.update({
+                "phase1_cache":          "narr_prism_phase1_cache.py",
+                "refinement_training":   "narr_prism_refinement.py",
+                "refinement_inference":  "narr_prism_refinement.py",
+                "refinement_evaluation": "evaluate_refinement.py",
+            })
+        if job_type == "evaluation":
+            return str(script_dir.parent / "evaluate_prism_inference.py")
         name = mapping.get(job_type)
         if not name:
             return None
         return str(script_dir / name)
+
 
     def _save_jobs(self) -> None:
         try:
@@ -321,16 +351,47 @@ class JobManager:
                         dep_job["status"] = "running"
                         dep_job["note"] = f"Dependency '{job_id}' completed — starting now"
 
-            for dep_job_id in blocked_ids:
-                dep_job = self._jobs.get(dep_job_id)
-                if dep_job:
-                    dep_job["status"] = "blocked"
-                    dep_job["note"] = (
-                        f"Dependency '{job_id}' failed (exit code {returncode}) — "
-                        "this job will not run. Resubmit when ready."
-                    )
+            # Everything downstream of a failed/cancelled job can never run: remove the
+            # whole chain instead of leaving it scheduled, and say so on the failed job.
+            removed: List[str] = []
+            stack = list(blocked_ids)
+            while stack:
+                jid = stack.pop()
+                removed.append(jid)
+                for child_id, child in list(self._dep_waiting.items()):
+                    if child.get("depends_on") == jid:
+                        del self._dep_waiting[child_id]
+                        stack.append(child_id)
+            removed_logs = []
+            for jid in removed:
+                job = self._jobs.pop(jid, None) or {}
+                if job.get("log_file"):
+                    removed_logs.append(Path(job["log_file"]))
+                self._pending_queue = [p for p in self._pending_queue if p.get("job_id") != jid]
+            parent = self._jobs.get(job_id)
+            if removed and parent is not None:
+                note = (
+                    f"Removed {len(removed)} dependent job(s) that can no longer run: "
+                    f"{', '.join(removed)}. Resubmit when ready."
+                )
+                parent["note"] = f"{parent['note']} | {note}" if parent.get("note") else note
 
             self._save_jobs()
+
+        for jid in removed:
+            for path in (self._status_file_path(jid), self._wrapper_script_path(jid)):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        for log_path in removed_logs:
+            try:
+                if log_path.is_file() and log_path.stat().st_size == 0:
+                    log_path.unlink()
+            except Exception:
+                pass
+        if removed:
+            logger.info(f"Job {job_id} did not succeed — removed dependents {removed}")
 
         for dep_job_id, pending in unblocked:
             if self._requires_gpu(pending["job_type"]):
@@ -362,7 +423,10 @@ class JobManager:
             return []
 
     def _requires_gpu(self, job_type: str) -> bool:
-        return job_type in {"training", "inference"}
+        return job_type in {
+            "training", "inference",
+            "phase1_cache", "refinement_training", "refinement_inference",
+        }
 
     @staticmethod
     def _parse_num_gpus(args: List[str]) -> int:
@@ -591,6 +655,39 @@ class JobManager:
                 self._watcher_active = True
                 threading.Thread(target=self._gpu_watcher_loop, daemon=True).start()
 
+    def _purge_blocked_jobs(self) -> None:
+        """Drop jobs left 'blocked' by older versions (dependents of a failed job are
+        now removed, not kept)."""
+        with self._lock:
+            stale = [jid for jid, job in self._jobs.items() if job.get("status") == "blocked"]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+                self._dep_waiting.pop(jid, None)
+            if stale:
+                self._save_jobs()
+        for jid in stale:
+            for path in (self._status_file_path(jid), self._wrapper_script_path(jid)):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    def _resolve_finished_dependencies(self) -> None:
+        """Release or block jobs still waiting on a dependency that already ended
+        (e.g. it finished while the server was down, or before this fix cascaded blocks)."""
+        with self._lock:
+            parents = {
+                pending.get("depends_on") for pending in self._dep_waiting.values()
+            }
+            finished = [
+                (pid, self._jobs[pid]["status"] == "done", self._jobs[pid].get("return_code"))
+                for pid in parents
+                if pid in self._jobs
+                and self._jobs[pid].get("status") in ("done", "failed", "cancelled", "blocked")
+            ]
+        for parent_id, succeeded, returncode in finished:
+            self._handle_job_terminal(parent_id, succeeded, returncode)
+
     def _reconciler_loop(self) -> None:
         """Background thread: detects running→terminal transitions for jobs whose
         in-process `_monitor` was lost (e.g., across a server restart), and
@@ -615,6 +712,7 @@ class JobManager:
                         rc = job.get("return_code")
                     if prev in ("running", "unknown") and new in ("done", "failed", "cancelled"):
                         self._handle_job_terminal(job_id, new == "done", rc)
+                self._resolve_finished_dependencies()
                 with self._lock:
                     self._save_jobs()
             except Exception as e:
@@ -695,7 +793,7 @@ class JobManager:
                 with open(config_path, "r", encoding="utf-8") as _f:
                     _cfg = _yaml.safe_load(_f) or {}
                 _data = _cfg.get("data", {})
-                _repo_root = Path(script).resolve().parents[2]
+                _repo_root = _repo_root_for(script)
                 _output_paths = {
                     "data.preprocessed_dir": _data.get("preprocessed_dir"),
                     "data.scalar_dir":       _data.get("scalar_dir"),
@@ -713,6 +811,24 @@ class JobManager:
                     _err = self._validate_path(str(_p), _label)
                     if _err:
                         return json.dumps({"status": "error", "message": _err})
+                # A case directory inside preprocessed_dir may be a symlink to shared,
+                # read-only data from the main repo; preprocessing and compute_scalars
+                # (which writes <preprocessed_dir>/<case_name>/scalars) must not write there.
+                _case = _cfg.get("case_name")
+                _pre = _data.get("preprocessed_dir")
+                if job_type in ("preprocessing", "compute_scalars") and _case and _pre:
+                    _base = Path(_pre).expanduser()
+                    if not _base.is_absolute():
+                        _base = _repo_root / _base
+                    for _split in ("", "training", "validation", "inference"):
+                        _case_dir = _base / _split / _case if _split else _base / _case
+                        if _case_dir.exists() and not path_is_allowed(_case_dir.resolve()):
+                            return json.dumps({"status": "error", "message": (
+                                f"Preprocessed data for case '{_case}' at {_case_dir} is shared, "
+                                f"read-only data ({_case_dir.resolve()}). Use it as-is for "
+                                "training/inference, or create a custom YAML with a new "
+                                "case_name to preprocess into this repo."
+                            )})
             except Exception as e:
                 return json.dumps({"status": "error", "message": f"Could not validate config: {e}"})
 
@@ -722,7 +838,7 @@ class JobManager:
         log_file = str(log_dir / f"job_{job_id}.log")
 
         env = os.environ.copy()
-        repo_root = str(Path(script).resolve().parents[2])
+        repo_root = str(_repo_root_for(script))
         script_dir = str(Path(script).resolve().parent)
         env["PYTHONPATH"] = ":".join(
             filter(None, [repo_root, script_dir, env.get("PYTHONPATH", "")])
@@ -1057,6 +1173,8 @@ class JobManager:
             self._jobs[job_id]["end_time"] = datetime.utcnow().isoformat()
             self._write_status_file(job_id, "cancelled")
             self._save_jobs()
+        # Jobs chained after a cancelled one can never run; remove them now.
+        self._handle_job_terminal(job_id, False, None)
 
         return json.dumps({"status": "ok", "message": f"Job '{job_id}' cancelled"})
 
@@ -1397,40 +1515,75 @@ def check_raw_data_status() -> str:
 
 _SCALAR_FILES = ("inputs_mean.npy", "inputs_std.npy", "targets_mean.npy", "targets_std.npy")
 
+# Phase-2 stochastic residual refiners (NARR only): a conditional generative model of
+# epsilon = y_true - y_hat is trained on top of the frozen deterministic Prithvi-UNet,
+# and each sampled residual r_hat gives one ensemble member y_hat + r_hat.
+REFINEMENT_TYPES = (
+    "diffusion_unet",
+    "diffusion_transformer",
+    "flow_matching_unet",
+    "flow_matching_transformer",
+)
+_REFINEMENT_SCRIPTS = ("narr_prism_refinement.py", "narr_prism_phase1_cache.py", "evaluate_refinement.py")
+# Keys a NARR_PRISM_<type>.yaml template sets on top of its deterministic base config.
+_REFINEMENT_OVERLAY_KEYS = (
+    "model.phase1", "model.refinement", "performance",
+    "num_epochs", "learning_rate", "batch_size", "gradient_accumulation_steps",
+    "limit_steps_train", "limit_steps_valid", "distributed_strategy",
+    "resume_training", "auto_resume_if_checkpoint_exists",
+    "training.distributed", "training.num_gpus", "training.per_device_batch_size",
+    "training.gradient_accumulation_steps", "training.auto_resume_if_checkpoint_exists",
+)
 
-def _scalars_exist(config_path: str) -> Optional[Path]:
+
+def _load_config(config_path: str) -> dict:
     try:
         import yaml as _yaml
         with open(config_path, "r", encoding="utf-8") as fh:
-            cfg = _yaml.safe_load(fh) or {}
+            return _yaml.safe_load(fh) or {}
     except Exception:
-        return None
+        return {}
 
-    data = cfg.get("data", {}) or {}
-    repo_root = Path(config_path).resolve().parents[2]
+
+def _resolve_config_path(config_path: str) -> str:
+    """Resolve a bare or relative config name against the MERRA/NARR example dirs."""
+    p = Path(config_path).expanduser()
+    if p.is_absolute():
+        return str(p)
+    for base in (_SCRIPT_DIR, _NARR_SCRIPT_DIR):
+        for candidate in (base / p, base / p.name):
+            if candidate.exists():
+                return str(candidate.resolve())
+    return str(p.resolve())
+
+
+def _repo_path(config_path: str, value: str) -> Path:
+    """Resolve a YAML path value (relative paths are relative to the repo root)."""
+    p = Path(value).expanduser()
+    return p if p.is_absolute() else (_repo_root_for(config_path) / p).resolve()
+
+
+def _case_dir(config_path: str, cfg: dict) -> Optional[Path]:
+    preproc_dir_raw = (cfg.get("data", {}) or {}).get("preprocessed_dir")
     case_name = cfg.get("case_name", "")
+    if not preproc_dir_raw or not case_name:
+        return None
+    return _repo_path(config_path, preproc_dir_raw) / case_name
+
+
+def _scalars_exist(config_path: str) -> Optional[Path]:
+    """Scalars live in <preprocessed_dir>/<case_name>/scalars/, with a same-case
+    fallback to the legacy data.scalar_dir/<case_name>/ (mirrors granitewxc)."""
+    cfg = _load_config(config_path)
     candidates: List[Path] = []
-
-    # Current code writes case-scoped scalars to <preprocessed_dir>/<case_name>/scalars.
-    preproc_raw = data.get("preprocessed_dir")
-    if preproc_raw and case_name:
-        preproc = Path(preproc_raw).expanduser()
-        if not preproc.is_absolute():
-            preproc = (repo_root / preproc).resolve()
-        candidates.append(preproc / case_name / "scalars")
-
-    scalar_dir_raw = data.get("scalar_dir")
-    if not scalar_dir_raw:
-        return next((d for d in candidates if all((d / f).exists() for f in _SCALAR_FILES)), None)
-
-    base = Path(scalar_dir_raw).expanduser()
-    if not base.is_absolute():
-        base = (repo_root / base).resolve()
-
-    if case_name:
-        case_dir = base if base.name == case_name else base / case_name
-        candidates.append(case_dir)
-    candidates.append(base)
+    case_dir = _case_dir(config_path, cfg)
+    if case_dir is not None:
+        candidates.append(case_dir / "scalars")
+    scalar_dir_raw = (cfg.get("data", {}) or {}).get("scalar_dir")
+    case_name = cfg.get("case_name", "")
+    if scalar_dir_raw and case_name:
+        base = _repo_path(config_path, scalar_dir_raw)
+        candidates.append(base if base.name == case_name else base / case_name)
 
     for d in candidates:
         if all((d / f).exists() for f in _SCALAR_FILES):
@@ -1438,30 +1591,19 @@ def _scalars_exist(config_path: str) -> Optional[Path]:
     return None
 
 
-def _preprocessed_exists(config_path: str) -> Optional[Path]:
-    try:
-        import yaml as _yaml
-        with open(config_path, "r", encoding="utf-8") as fh:
-            cfg = _yaml.safe_load(fh) or {}
-    except Exception:
-        return None
-
-    data = cfg.get("data", {}) or {}
-    preproc_dir_raw = data.get("preprocessed_dir")
+def _preprocessed_exists(config_path: str, split: str = "training") -> Optional[Path]:
+    """Return the directory holding preprocessed daily .nc files for one split."""
+    cfg = _load_config(config_path)
+    preproc_dir_raw = (cfg.get("data", {}) or {}).get("preprocessed_dir")
     if not preproc_dir_raw:
         return None
-
-    repo_root = Path(config_path).resolve().parents[2]
-    base = Path(preproc_dir_raw).expanduser()
-    if not base.is_absolute():
-        base = (repo_root / base).resolve()
-
+    base = _repo_path(config_path, preproc_dir_raw)
     case_name = cfg.get("case_name", "")
     candidates: List[Path] = []
     if case_name:
-        candidates.append(base / "training" / case_name)
-        candidates.append(base / case_name / "training")
-    candidates.append(base / "training")
+        candidates.append(base / case_name / split)
+        candidates.append(base / split / case_name)
+    candidates.append(base / split)
 
     for d in candidates:
         if d.is_dir() and any(d.glob("*.nc")):
@@ -1469,79 +1611,476 @@ def _preprocessed_exists(config_path: str) -> Optional[Path]:
     return None
 
 
+def _phase1_checkpoint_path(config_path: str, cfg: dict) -> Path:
+    """Deterministic fine-tuning saves checkpoints under checkpoint_dir/<case_name>/."""
+    checkpoint_dir = cfg.get("checkpoint_dir", "./experiments/checkpoints")
+    return _repo_path(config_path, checkpoint_dir) / cfg.get("case_name", "") / "last.ckpt"
+
+
+def _inference_case_dir(config_path: str, cfg: dict) -> Path:
+    output_dir = (cfg.get("inference") or {}).get("output_dir", "./experiments/inference_output")
+    return _repo_path(config_path, output_dir) / cfg.get("case_name", "")
+
+
+def _refined_case_dir(config_path: str, cfg: dict) -> Path:
+    """Mirror narr_prism_refinement._infer_output_root: <root>/refinement_<type>/<case>."""
+    inference_cfg = cfg.get("inference") or {}
+    root = inference_cfg.get(
+        "refinement_output_dir", inference_cfg.get("output_dir", "./refinement_inference_output")
+    )
+    refinement_type = cfg["model"]["refinement"]["type"]
+    return _repo_path(config_path, root) / f"refinement_{refinement_type}" / cfg.get("case_name", "")
+
+
+def _refinement_enabled(cfg: dict) -> bool:
+    return bool(((cfg.get("model") or {}).get("refinement") or {}).get("enabled"))
+
+
+def _refinement_variant(cfg: dict) -> str:
+    """Refinement type, suffixed _no_attention for a UNet head without bottleneck attention."""
+    refinement = cfg["model"]["refinement"]
+    unet = refinement.get("unet") or {}
+    if refinement["type"].endswith("_unet") and unet.get("bottleneck_attention") is False:
+        return f"{refinement['type']}_no_attention"
+    return refinement["type"]
+
+
+def create_refinement_config(base_config: str, refinement_type: str, refiner_attention: bool = True) -> str:
+    """Write custom_<base>_<type>.yaml: the deterministic NARR config plus the Phase-2
+    sections of the NARR_PRISM_<type>.yaml template.
+
+    The refiner reuses the base config's data, case, scalars and model so it matches
+    the Phase-1 checkpoint fine-tuned from that config. refiner_attention=False drops
+    the UNet head's bottleneck attention block (custom_<base>_<type>_no_attention.yaml,
+    with its own checkpoint and output directories).
+    """
+    import yaml as _yaml
+
+    base_config = _resolve_config_path(base_config)
+    if _detect_dataset_type(base_config) != "narr":
+        return json.dumps({"status": "error", "message": (
+            "Stochastic residual refinement is only available for NARR configs; "
+            "MERRA uses the deterministic Prithvi pipeline only."
+        )})
+    if refinement_type not in REFINEMENT_TYPES:
+        return json.dumps({"status": "error", "message": (
+            f"Unknown refinement_type {refinement_type!r}; choose one of {', '.join(REFINEMENT_TYPES)}."
+        )})
+    if not refiner_attention and not refinement_type.endswith("_unet"):
+        return json.dumps({"status": "error", "message": (
+            "Transformer refiners are attention-based; refiner_attention=false applies to "
+            "diffusion_unet and flow_matching_unet only."
+        )})
+    variant = refinement_type if refiner_attention else f"{refinement_type}_no_attention"
+    cfg = _load_config(base_config)
+    if not cfg:
+        return json.dumps({"status": "error", "message": f"Could not read config {base_config}"})
+    if _refinement_enabled(cfg):
+        return json.dumps({"status": "error", "message": (
+            f"{base_config} is already a refinement config; pass the deterministic base config."
+        )})
+    if not (cfg.get("dates") or {}).get("validation"):
+        return json.dumps({"status": "error", "message": (
+            "Refinement needs dates.validation in the base config (the Phase-1 residual cache "
+            "and refiner validation use it). Use NARR_PRISM_subdomain.yaml as the base, or "
+            "call create_custom_yaml with validation_start / validation_end (not overlapping training or inference)."
+        )})
+
+    missing = [name for name in _REFINEMENT_SCRIPTS if not (_NARR_SCRIPT_DIR / name).is_file()]
+    if missing:
+        return json.dumps({"status": "error", "message": (
+            f"The granite-wxc checkout at {_NARR_SCRIPT_DIR.parents[1]} lacks {', '.join(missing)}; "
+            "run setup_code with variant='stochastic_refinement' (or point GRANITE_WXC_REPO at that checkout)."
+        )})
+    template_path = _NARR_SCRIPT_DIR / f"NARR_PRISM_{refinement_type}.yaml"
+    template = _load_config(str(template_path))
+    if not template:
+        return json.dumps({"status": "error", "message": f"Refinement template not found: {template_path}"})
+
+    out = _yaml.safe_load(_yaml.safe_dump(cfg))  # deep copy
+    for dotted in _REFINEMENT_OVERLAY_KEYS:
+        src, dst = template, out
+        *parents, leaf = dotted.split(".")
+        for key in parents:
+            src = (src or {}).get(key)
+            dst = dst.setdefault(key, {})
+        if isinstance(src, dict) and leaf in src:
+            dst[leaf] = src[leaf]
+
+    case_name = cfg.get("case_name", "")
+    base_checkpoint_dir = str(cfg.get("checkpoint_dir", "./experiments/checkpoints")).rstrip("/")
+    out["model"]["phase1"]["checkpoint"] = f"{base_checkpoint_dir}/{case_name}/last.ckpt"
+    out["model"]["refinement"]["checkpoint"] = None
+    if not refiner_attention:
+        out["model"]["refinement"]["unet"]["bottleneck_attention"] = False
+        output_dir = str((cfg.get("inference") or {}).get("output_dir", "./experiments/inference_output"))
+        out.setdefault("inference", {})["refinement_output_dir"] = f"{output_dir.rstrip('/')}/no_attention"
+    # Same case as the template: keep its checkpoint dir so existing Phase-2 runs resume.
+    if case_name == template.get("case_name"):
+        suffix = "" if refiner_attention else "_no_attention"
+        out["checkpoint_dir"] = f"{str(template['checkpoint_dir']).rstrip('/')}{suffix}"
+    else:
+        parent = base_checkpoint_dir.rsplit("/", 1)[0] if "/" in base_checkpoint_dir else "."
+        out["checkpoint_dir"] = f"{parent}/refinement_checkpoints/{case_name}/{variant}"
+    out["resume_checkpoint_path"] = None
+    out["job_id"] = f"{cfg.get('job_id', Path(base_config).stem)}_{variant}"
+
+    stem = Path(base_config).stem
+    stem = stem[len("custom_"):] if stem.startswith("custom_") else stem
+    out_path = Path(base_config).parent / f"custom_{stem}_{variant}.yaml"
+    if not path_is_allowed(out_path):
+        return json.dumps({"status": "error", "message": (
+            f"Refusing to write {out_path}: outside the allowed roots ({allowed_roots_message()})."
+        )})
+    header = (
+        f"# Generated by the Prithvi-WxC agent: {Path(base_config).name} + Phase-2 "
+        f"{variant} sections from {template_path.name}.\n"
+    )
+    out_path.write_text(header + _yaml.safe_dump(out, sort_keys=False), encoding="utf-8")
+    return json.dumps({
+        "status": "ok",
+        "config_path": str(out_path),
+        "refinement_type": refinement_type,
+        "refiner_attention": refiner_attention,
+        "phase1_checkpoint": str(_phase1_checkpoint_path(base_config, cfg)),
+        "refinement_checkpoint_dir": str(_repo_path(str(out_path), out["checkpoint_dir"])),
+    })
+
+
+def _submit(job_type: str, script: Path, args: List[str], config_path: str,
+            depends_on: Optional[str], label: str) -> str:
+    result = _job_manager.start_job(job_type, str(script), args, config_path, depends_on=depends_on)
+    try:
+        err = json.loads(result)
+        if err.get("status") == "error":
+            return result
+        job_id = result
+    except (json.JSONDecodeError, AttributeError):
+        job_id = result
+    status = _job_manager._jobs.get(job_id, {}).get("status", "queued")
+    return json.dumps({
+        "job_id": job_id,
+        "type": job_type,
+        "status": status,
+        "message": (
+            f"{label} job '{job_id}' is waiting for job '{depends_on}' to complete first."
+            if depends_on else
+            f"{label} job '{job_id}' started. Call get_job_status with job_id='{job_id}' to check progress."
+        ),
+    })
+
+
+def start_evaluation_job(
+    config_path: str = _DEFAULT_CONFIG,
+    run_label: Optional[str] = None,
+    depends_on: Optional[str] = None,
+) -> str:
+    """Score deterministic inference against PRISM on the exact canonical grid
+    (RMSE, correlation, bias, boundary errors) with evaluate_prism_inference.py."""
+    config_path = _resolve_config_path(config_path)
+    script = _repo_root_for(config_path) / "examples" / "evaluate_prism_inference.py"
+    label = run_label or f"{_detect_dataset_type(config_path)}_prism"
+    args = ["--config", config_path, "--run-label", label]
+    return _submit("evaluation", script, args, config_path, depends_on, "Evaluation")
+
+
+def _require_narr_refinement_config(config_path: str) -> Optional[str]:
+    if _detect_dataset_type(config_path) != "narr":
+        return json.dumps({"status": "error", "message": (
+            "Stochastic residual refinement is only available for NARR configs."
+        )})
+    if not _refinement_enabled(_load_config(config_path)):
+        return json.dumps({"status": "error", "message": (
+            f"{config_path} has no enabled model.refinement section. Use a "
+            "NARR_PRISM_<type>.yaml template or create_refinement_config."
+        )})
+    return None
+
+
+def _phase1_checkpoint_for_refinement(config_path: str, cfg: dict) -> Path:
+    return _repo_path(config_path, cfg["model"]["phase1"]["checkpoint"])
+
+
+def start_phase1_cache_job(
+    config_path: str,
+    depends_on: Optional[str] = None,
+) -> str:
+    """Run the frozen Phase-1 model once over training/validation dates and cache
+    y_hat plus the residual statistics every refinement head reuses."""
+    config_path = _resolve_config_path(config_path)
+    err = _require_narr_refinement_config(config_path)
+    if err:
+        return err
+    cfg = _load_config(config_path)
+    cache_cfg = (cfg.get("performance") or {}).get("phase1_cache") or {}
+    if not cache_cfg.get("enabled"):
+        return json.dumps({"status": "error", "message": "performance.phase1_cache is disabled in this config."})
+    script = _NARR_SCRIPT_DIR / "narr_prism_phase1_cache.py"
+    args = [
+        "build", "--config", config_path,
+        "--checkpoint", str(_phase1_checkpoint_for_refinement(config_path, cfg)),
+        "--output-root", str(_repo_path(config_path, cache_cfg["path"])),
+        "--device", "cuda:0",
+    ]
+    return _submit("phase1_cache", script, args, config_path, depends_on, "Phase-1 residual cache")
+
+
+def start_refinement_training_job(
+    config_path: str,
+    num_gpus: int = 1,
+    num_epochs: Optional[int] = None,
+    depends_on: Optional[str] = None,
+) -> str:
+    """Train the Phase-2 residual refiner on epsilon = y_true - y_hat with Phase 1 frozen.
+    Resumes automatically when checkpoint_dir/last.ckpt already exists."""
+    config_path = _resolve_config_path(config_path)
+    err = _require_narr_refinement_config(config_path)
+    if err:
+        return err
+    cfg = _load_config(config_path)
+    checkpoint_dir = _repo_path(config_path, cfg["checkpoint_dir"])
+    script = _NARR_SCRIPT_DIR / "narr_prism_refinement.py"
+    args = [
+        "train", "--config", config_path,
+        "--phase1-checkpoint", str(_phase1_checkpoint_for_refinement(config_path, cfg)),
+        "--checkpoint-dir", str(checkpoint_dir),
+        "--num-gpus", str(num_gpus),
+    ]
+    if num_epochs:
+        args += ["--num-epochs", str(num_epochs)]
+    if (checkpoint_dir / "last.ckpt").is_file():
+        args.append("--resume")
+    return _submit("refinement_training", script, args, config_path, depends_on, "Refinement training")
+
+
+def start_refinement_inference_job(
+    config_path: str,
+    ensemble_size: Optional[int] = None,
+    num_gpus: int = 1,
+    split: str = "inference",
+    depends_on: Optional[str] = None,
+) -> str:
+    """Tiled deterministic + stochastic ensemble inference: each member is y_hat + r_hat.
+    Writes deterministic, residual, members, ensemble mean and spread per day."""
+    config_path = _resolve_config_path(config_path)
+    err = _require_narr_refinement_config(config_path)
+    if err:
+        return err
+    cfg = _load_config(config_path)
+    script = _NARR_SCRIPT_DIR / "narr_prism_refinement.py"
+    args = [
+        "infer", "--config", config_path,
+        "--phase1-checkpoint", str(_phase1_checkpoint_for_refinement(config_path, cfg)),
+        "--split", split, "--num-gpus", str(num_gpus), "--resume-existing", "--no-progress",
+    ]
+    if ensemble_size:
+        args += ["--ensemble-size", str(ensemble_size)]
+    return _submit("refinement_inference", script, args, config_path, depends_on, "Refinement inference")
+
+
+def start_refinement_evaluation_job(
+    config_path: str,
+    split: str = "inference",
+    depends_on: Optional[str] = None,
+) -> str:
+    """Compare deterministic Prithvi (y_hat) against the refined ensemble (y_hat + r_hat)
+    on the same dates and grid cells with evaluate_refinement.py."""
+    config_path = _resolve_config_path(config_path)
+    err = _require_narr_refinement_config(config_path)
+    if err:
+        return err
+    cfg = _load_config(config_path)
+    variant = _refinement_variant(cfg)
+    phase1_dir = _inference_case_dir(config_path, cfg)
+    refined_dir = _refined_case_dir(config_path, cfg)
+    if split == "validation":
+        phase1_dir = phase1_dir.parent / "validation" / phase1_dir.name
+        refined_dir = refined_dir.parent / "validation" / refined_dir.name
+    output_dir = (
+        _repo_path(config_path, cfg.get("path_experiment", "./experiments"))
+        / "refinement_evaluation" / cfg.get("case_name", "") / variant
+    )
+    script = _NARR_SCRIPT_DIR / "evaluate_refinement.py"
+    args = [
+        "--config", config_path,
+        "--phase1-dir", str(phase1_dir),
+        "--method", f"{variant}={refined_dir}",
+        "--output-dir", str(output_dir),
+        "--split", split,
+    ]
+    return _submit("refinement_evaluation", script, args, config_path, depends_on, "Refinement evaluation")
+
+
 def run_training_pipeline(
     config_path: str = _DEFAULT_CONFIG,
     num_gpus: int = 1,
     save_every: int = 5,
     queue_inference: bool = True,
+    evaluate: bool = True,
+    train_phase1: bool = True,
+    refinement_type: Optional[str] = None,
+    refiner_attention: bool = True,
+    ensemble_size: Optional[int] = None,
+    refinement_epochs: Optional[int] = None,
 ) -> str:
-    """Smart pipeline: check scalars + preprocessed data, then submit all
-    needed jobs in dependency order. Every job is visible via list_jobs /
-    get_job_status and cancellable via cancel_job.
+    """Queue the full case-scoped workflow in dependency order (README order):
 
-    Steps:
-      1. compute_scalars        — skipped if scalar .npy files already exist
-      2. preprocessing/training — skipped if training .nc files already exist
-      3. preprocessing/inference — skipped if training was skipped
-      4. training               — always runs (after its dependencies)
-      5. inference              — queued; waits for training to finish
+      1. preprocessing/training    — skipped if training .nc files exist
+      2. compute_scalars           — training-only; rerun after new training products
+      3. preprocessing/validation  — only if dates.validation is set and data is missing
+      4. preprocessing/inference   — skipped if inference .nc files exist
+      5. training (Phase 1)        — deterministic Prithvi-UNet fine-tuning
+      6. inference                 — tiled deterministic inference
+      7. evaluation                — evaluate_prism_inference.py vs PRISM
+    NARR only, when refinement_type is given (Phase 2, Prithvi frozen):
+      8. phase1_cache              — y_hat and residual statistics for train/validation
+      9. refinement_training       — learn epsilon = y_true - y_hat (diffusion / flow matching;
+                                     refiner_attention=False drops the UNet bottleneck attention)
+     10. refinement_inference      — ensemble members y_hat + r_hat, mean and spread
+     11. refinement_evaluation     — deterministic vs refined metrics
     """
+    config_path = _resolve_config_path(config_path)
     blocked = _preflight_error(config_path, "training", None)
     if blocked:
         return blocked
+    cfg = _load_config(config_path)
+    if not cfg:
+        return json.dumps({"status": "error", "message": f"Could not read config {config_path}"})
+    dataset_type = _detect_dataset_type(config_path)
+    date_errors = date_range_errors(cfg)
+    if date_errors:
+        return json.dumps({"status": "error", "stage": "config", "message": (
+            f"{Path(config_path).name} has invalid dates: " + " ".join(date_errors)
+            + " Fix them with create_custom_yaml (training_start/end, validation_start/end, "
+            "inference_start/end) before running the pipeline."
+        )})
+    if _refinement_enabled(cfg):
+        return json.dumps({"status": "error", "message": (
+            f"{Path(config_path).name} is a Phase-2 refinement config. Pass the deterministic "
+            "base config (e.g. NARR_PRISM_subdomain.yaml) with refinement_type="
+            f"{cfg['model']['refinement'].get('type')}."
+        )})
+    if refinement_type and dataset_type != "narr":
+        return json.dumps({"status": "error", "message": (
+            "MERRA has no stochastic residual refinement; run the MERRA pipeline without "
+            "refinement_type (deterministic Prithvi fine-tuning, inference and evaluation)."
+        )})
+    phase1_checkpoint = _phase1_checkpoint_path(config_path, cfg)
+    if train_phase1:
+        # Fine-tuning always starts from the pretrained Prithvi weights; the training
+        # code has no random-initialisation path.
+        weights = cfg.get("path_model_weights")
+        if not weights or not _repo_path(config_path, str(weights)).is_file():
+            return json.dumps({"status": "error", "stage": "config", "message": (
+                f"path_model_weights is {weights!r}, which is not an existing file. Fine-tuning "
+                "starts from the pretrained Prithvi weights, so set it to the base config's value "
+                "(e.g. ./granite-geospatial-wxc-downscaling/ECCC/weights/best_rmse_UNET.pt). "
+                "'From scratch' means a new Phase-1 fine-tune from those weights, not random weights."
+            )})
+    resume_path = cfg.get("resume_checkpoint_path")
+    if train_phase1 and cfg.get("resume_training") and resume_path:
+        own_dir = phase1_checkpoint.parent
+        if own_dir not in _repo_path(config_path, str(resume_path)).parents:
+            return json.dumps({"status": "error", "stage": "config", "message": (
+                f"resume_checkpoint_path {resume_path!r} belongs to another case, but this run's "
+                f"case_name is {cfg.get('case_name')!r} (checkpoints go to {own_dir}). Set "
+                "resume_training: false and resume_checkpoint_path: null for a new run "
+                "(create_custom_yaml does this automatically when case_name changes)."
+            )})
+    if not train_phase1 and not phase1_checkpoint.is_file():
+        return json.dumps({"status": "error", "message": (
+            f"train_phase1=false but no Phase-1 checkpoint exists at {phase1_checkpoint}."
+        )})
+
+    refinement_config = None
+    if refinement_type:
+        created = json.loads(create_refinement_config(config_path, refinement_type, refiner_attention))
+        if created.get("status") != "ok":
+            return json.dumps({"status": "error", "stage": "refinement_config", "message": created.get("message")})
+        refinement_config = created["config_path"]
 
     jobs_submitted: List[dict] = []
     skipped: List[str] = []
     last_job_id: Optional[str] = None
 
-    # Step 1 – Scalars
-    scalar_dir = _scalars_exist(config_path)
-    if scalar_dir:
-        skipped.append(f"compute_scalars  (scalars already exist at {scalar_dir})")
-    else:
-        raw = start_compute_scalars_job(config_path=config_path, depends_on=last_job_id)
+    def queue(stage: str, raw: str) -> Optional[str]:
+        """Record a submitted stage; return an error payload if submission failed."""
+        nonlocal last_job_id
         parsed = json.loads(raw)
         if parsed.get("status") == "error":
-            return json.dumps({"status": "error", "stage": "compute_scalars", "message": parsed.get("message")})
+            return json.dumps({"status": "error", "stage": stage, "message": parsed.get("message"),
+                               "jobs_already_submitted": jobs_submitted})
         last_job_id = parsed["job_id"]
-        jobs_submitted.append({"stage": "compute_scalars", "job_id": last_job_id, "status": parsed.get("status")})
+        jobs_submitted.append({"stage": stage, "job_id": last_job_id, "status": parsed.get("status")})
+        return None
 
-    # Step 2 – Preprocessing
-    preproc_dir = _preprocessed_exists(config_path)
-    if preproc_dir:
-        nc_count = len(list(preproc_dir.glob("*.nc")))
-        skipped.append(f"preprocessing    (training data already at {preproc_dir}, {nc_count} files)")
+    # 1. Training products
+    new_training_products = False
+    found = _preprocessed_exists(config_path, "training")
+    if found:
+        skipped.append(f"preprocessing/training   (already at {found}, {len(list(found.glob('*.nc')))} files)")
     else:
-        raw = start_preprocessing_job(config_path=config_path, mode="training", depends_on=last_job_id)
-        parsed = json.loads(raw)
-        if parsed.get("status") == "error":
-            return json.dumps({"status": "error", "stage": "preprocessing/training", "message": parsed.get("message")})
-        last_job_id = parsed["job_id"]
-        jobs_submitted.append({"stage": "preprocessing/training", "job_id": last_job_id, "status": parsed.get("status")})
+        if err := queue("preprocessing/training",
+                        start_preprocessing_job(config_path=config_path, mode="training", depends_on=last_job_id)):
+            return err
+        new_training_products = True
 
-        raw2 = start_preprocessing_job(config_path=config_path, mode="inference", depends_on=last_job_id)
-        parsed2 = json.loads(raw2)
-        if parsed2.get("status") == "error":
-            return json.dumps({"status": "error", "stage": "preprocessing/inference", "message": parsed2.get("message")})
-        last_job_id = parsed2["job_id"]
-        jobs_submitted.append({"stage": "preprocessing/inference", "job_id": last_job_id, "status": parsed2.get("status")})
+    # 2. Training-only scalars, recomputed whenever training products change
+    found = _scalars_exist(config_path)
+    if found and not new_training_products:
+        skipped.append(f"compute_scalars          (already at {found})")
+    elif err := queue("compute_scalars",
+                      start_compute_scalars_job(config_path=config_path, depends_on=last_job_id)):
+        return err
 
-    # Step 3 – Training
-    raw = start_training_job(config_path=config_path, num_gpus=num_gpus, save_every=save_every, depends_on=last_job_id)
-    parsed = json.loads(raw)
-    if parsed.get("status") == "error":
-        return json.dumps({"status": "error", "stage": "training", "message": parsed.get("message")})
-    last_job_id = parsed["job_id"]
-    jobs_submitted.append({"stage": "training", "job_id": last_job_id, "status": parsed.get("status")})
+    # 3–4. Validation / inference products
+    splits = []
+    if (cfg.get("dates") or {}).get("validation"):
+        splits.append("validation")
+    if queue_inference or refinement_type:
+        splits.append("inference")
+    for split in splits:
+        found = _preprocessed_exists(config_path, split)
+        if found:
+            skipped.append(f"preprocessing/{split:<10} (already at {found}, {len(list(found.glob('*.nc')))} files)")
+        elif err := queue(f"preprocessing/{split}",
+                          start_preprocessing_job(config_path=config_path, mode=split, depends_on=last_job_id)):
+            return err
 
-    # Step 4 – Inference
+    # 5. Deterministic Prithvi fine-tuning (Phase 1)
+    if train_phase1:
+        if err := queue("training", start_training_job(
+                config_path=config_path, num_gpus=num_gpus, save_every=save_every, depends_on=last_job_id)):
+            return err
+    else:
+        skipped.append(f"training                 (using existing {phase1_checkpoint})")
+
+    # 6–7. Tiled deterministic inference + evaluation
     if queue_inference:
-        raw = start_inference_job(config_path=config_path, depends_on=last_job_id)
-        parsed = json.loads(raw)
-        if parsed.get("status") == "error":
-            return json.dumps({"status": "error", "stage": "inference", "message": parsed.get("message")})
-        last_job_id = parsed["job_id"]
-        jobs_submitted.append({"stage": "inference", "job_id": last_job_id, "status": parsed.get("status")})
+        if err := queue("inference", start_inference_job(config_path=config_path, depends_on=last_job_id)):
+            return err
+        if evaluate and (err := queue("evaluation",
+                                      start_evaluation_job(config_path=config_path, depends_on=last_job_id))):
+            return err
+
+    # 8–11. NARR Phase-2 stochastic residual refinement
+    if refinement_config:
+        refinement_cfg = _load_config(refinement_config)
+        if ((refinement_cfg.get("performance") or {}).get("phase1_cache") or {}).get("enabled"):
+            if err := queue("phase1_cache", start_phase1_cache_job(refinement_config, depends_on=last_job_id)):
+                return err
+        if err := queue("refinement_training", start_refinement_training_job(
+                refinement_config, num_gpus=num_gpus, num_epochs=refinement_epochs, depends_on=last_job_id)):
+            return err
+        if err := queue("refinement_inference", start_refinement_inference_job(
+                refinement_config, ensemble_size=ensemble_size, num_gpus=num_gpus, depends_on=last_job_id)):
+            return err
+        if evaluate and (queue_inference or _inference_case_dir(config_path, cfg).is_dir()):
+            if err := queue("refinement_evaluation",
+                            start_refinement_evaluation_job(refinement_config, depends_on=last_job_id)):
+                return err
+        elif evaluate:
+            skipped.append("refinement_evaluation    (no deterministic inference outputs to compare against)")
 
     lines = ["Pipeline jobs submitted:"]
     for j in jobs_submitted:
@@ -1550,11 +2089,14 @@ def run_training_pipeline(
         lines.append("Skipped (already complete):")
         for s in skipped:
             lines.append(f"  {s}")
+    if refinement_config:
+        lines.append(f"Refinement config: {refinement_config}")
     lines += ["", "Monitor: list_jobs / get_job_status.  Cancel: cancel_job."]
 
     return json.dumps({
         "status": "ok",
         "jobs": jobs_submitted,
         "skipped": skipped,
+        "refinement_config": refinement_config,
         "message": "\n".join(lines),
     }, indent=2)

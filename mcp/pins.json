@@ -9,9 +9,9 @@
         "description": "Prithvi-UNet deterministic downscaling (MERRA_PRISM + NARR_PRISM examples)"
       },
       "stochastic_refinement": {
-        "branch": "Prithvi-UNet-stochastic_refinement",
-        "commit": "c65e9f3d6dc93d7ad7d439ab8216d1c85029dcdf",
-        "description": "Prithvi-UNet + diffusion / flow-matching residual refinement"
+        "branch": "narr_prism",
+        "commit": "7e2eb9405a95520bf25a35dc7dd9a058ac899792",
+        "description": "Prithvi-UNet + diffusion / flow-matching residual refinement (NARR_PRISM Phase 2: narr_prism_refinement.py, narr_prism_phase1_cache.py, evaluate_refinement.py)"
       }
     },
     "default_variant": "deterministic",

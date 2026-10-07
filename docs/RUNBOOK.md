@@ -121,7 +121,8 @@ Skills can also be started directly, for example `/prithvi-wxc-downscaling:prith
 
 > "Run the training pipeline on smoke_test with 1 GPU."
 
-- **Tools:** `run_training_pipeline` queues scalars → preprocessing → training → inference, skipping finished stages. `start_inference_job` runs inference alone from a checkpoint.
+- **Tools:** `run_training_pipeline` queues training preprocessing → scalars → validation/inference preprocessing → training → tiled inference → evaluation, skipping finished stages. `start_inference_job` runs inference alone from a checkpoint; `start_evaluation_job` scores existing inference against PRISM.
+- **NARR refinement:** "Train NARR_PRISM_subdomain with flow-matching residual refinement" adds `refinement_type`: residual cache → refiner training → ensemble inference → deterministic-vs-refined evaluation. Needs `setup_code` with `variant: stochastic_refinement`. MERRA-2 has no refinement. See [playbooks/refine-narr.md](../playbooks/refine-narr.md).
 - **Time:** the smoke config (6 training days, 1 inference day) takes about 6 minutes: scalars 0.2 min, preprocessing 0.6 min, training 1.9 min, inference 2.9 min.
 
 ### 5. Monitor jobs
@@ -250,7 +251,6 @@ Any other MCP client that runs local servers works the same way: register `bin/p
 
 ## Not included yet
 
-- Phase 2 stochastic refinement (diffusion and flow-matching ensembles). The code exists in the training repo but isn't exposed as tools.
 - CORDEX-ML-Bench training and evaluation. The data downloads, but nothing trains on it.
 - GPUs whose drivers only support CUDA 12.
 - Clusters that schedule jobs through SLURM or PBS.

@@ -33,9 +33,9 @@ Verified on 2026-10-01: a fresh data root downloaded through the MCP tools repro
 
 1. `list_available_configs` then `read_yaml_config` on the closest match.
 2. `create_custom_yaml` for a new case (never overwrite without confirmation).
-3. `start_compute_scalars_job` if scalars are missing.
-4. `start_preprocessing_job` (depends on scalars).
-5. Training: `run_training_pipeline` only. Inference-only: `start_inference_job`.
+3. Training preprocessing, then training-only scalars (scalars are computed from training products, never before them), then validation/inference preprocessing.
+4. Training: `run_training_pipeline` only — it queues steps 3–4 plus fine-tuning, tiled inference, and evaluation. Inference-only: `start_inference_job`; evaluation-only: `start_evaluation_job`.
+5. NARR refinement: `run_training_pipeline` with `refinement_type` on the deterministic base config (residual cache → refiner → ensemble → deterministic-vs-refined evaluation).
 6. Monitor with `get_job_status`, `list_jobs`, `get_gpu_status`.
 
 # Guardrails

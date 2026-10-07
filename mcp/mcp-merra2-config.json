@@ -1045,6 +1045,14 @@
             "type": "string",
             "description": "Inference end date (YYYY-MM-DD)."
           },
+          "validation_start": {
+            "type": "string",
+            "description": "Validation start date (YYYY-MM-DD). Must not overlap training or inference; required for NARR refinement."
+          },
+          "validation_end": {
+            "type": "string",
+            "description": "Validation end date (YYYY-MM-DD)."
+          },
           "num_gpus": {
             "type": "integer",
             "description": "Number of GPUs for distributed training."
@@ -1066,7 +1074,7 @@
           },
           "extra_overrides": {
             "type": "object",
-            "description": "Arbitrary top-level key\u2192value overrides applied after all named parameters."
+            "description": "Extra overrides applied after the named parameters. Dotted keys address nested values (e.g. {\"dates.validation.start\": \"2014-01-01\"}); dict values merge into existing sections instead of replacing them. Prefer the named date parameters for dates."
           },
           "localize_paths": {
             "type": "boolean",
@@ -1078,17 +1086,17 @@
     },
     {
       "name": "run_training_pipeline",
-      "description": "THE ONLY way to start training. Checks if scalars exist (skips compute_scalars if yes), checks if preprocessed data exists (skips preprocessing if yes), then queues training followed by inference in dependency order \u2014 each job starts automatically when its predecessor succeeds. All jobs are visible via list_jobs and cancellable via cancel_job. ALWAYS use this when the user asks to train / fine-tune / run training. Do not train by chaining other tools manually.",
+      "description": "THE ONLY way to start training / fine-tuning. Queues the case-scoped workflow in dependency order \u2014 training preprocessing \u2192 training-only scalars \u2192 validation/inference preprocessing \u2192 Prithvi fine-tuning (Phase 1) \u2192 tiled inference \u2192 evaluation \u2014 skipping stages whose outputs already exist; each job starts automatically when its predecessor succeeds. NARR only: refinement_type adds Phase-2 stochastic residual refinement on top of the frozen Prithvi model \u2014 Phase-1 residual cache \u2192 refiner training on the residual y_true - y_hat (diffusion or flow matching) \u2192 ensemble inference (y_hat + r_hat, ensemble mean and spread) \u2192 deterministic-vs-refined evaluation. MERRA has no refinement. Pass the deterministic base config, not a NARR_PRISM_<type>.yaml refinement template. All jobs are visible via list_jobs and cancellable via cancel_job.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "config_path": {
             "type": "string",
-            "description": "Path to YAML config (MERRA_PRISM.yaml or NARR_PRISM.yaml). Defaults to MERRA_PRISM.yaml."
+            "description": "Path to the deterministic YAML config (MERRA_PRISM*.yaml or NARR_PRISM*.yaml). Defaults to MERRA_PRISM.yaml."
           },
           "num_gpus": {
             "type": "integer",
-            "description": "Number of GPUs for training.",
+            "description": "Number of GPUs for training (also used for refinement training/inference).",
             "default": 1
           },
           "save_every": {
@@ -1098,10 +1106,137 @@
           },
           "queue_inference": {
             "type": "boolean",
-            "description": "Whether to queue inference after training completes. Default true.",
+            "description": "Whether to queue deterministic tiled inference after training. Default true.",
             "default": true
+          },
+          "evaluate": {
+            "type": "boolean",
+            "description": "Whether to queue evaluation against PRISM after inference (and deterministic-vs-refined evaluation after refinement). Default true.",
+            "default": true
+          },
+          "train_phase1": {
+            "type": "boolean",
+            "description": "Fine-tune the deterministic Prithvi model. Set false to reuse the existing checkpoint at checkpoint_dir/<case_name>/last.ckpt (e.g. to only train a refiner). Default true.",
+            "default": true
+          },
+          "refinement_type": {
+            "type": "string",
+            "enum": ["diffusion_unet", "diffusion_transformer", "flow_matching_unet", "flow_matching_transformer"],
+            "description": "NARR only. Adds Phase-2 stochastic residual refinement with this head. The base config must define dates.validation (e.g. NARR_PRISM_subdomain.yaml)."
+          },
+          "refiner_attention": {
+            "type": "boolean",
+            "description": "NARR refinement with a UNet head only: false drops the bottleneck attention block (separate custom_<base>_<type>_no_attention.yaml, checkpoints and outputs). Transformer heads are always attention-based. Default true.",
+            "default": true
+          },
+          "ensemble_size": {
+            "type": "integer",
+            "description": "NARR refinement only: ensemble members per day (default from the refinement template, 10)."
+          },
+          "refinement_epochs": {
+            "type": "integer",
+            "description": "NARR refinement only: override the refiner's num_epochs."
           }
         }
+      }
+    },
+    {
+      "name": "start_evaluation_job",
+      "description": "Evaluate deterministic inference against PRISM on the exact canonical grid (evaluate_prism_inference.py): RMSE, correlation, bias and boundary errors, written as CSV, JSON report and a climatology/bias/RMSE PNG under path_experiment/comparison_plots/<case_name>/. Works for MERRA and NARR. Supports depends_on.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Deterministic YAML config whose inference outputs to evaluate."
+          },
+          "run_label": {
+            "type": "string",
+            "description": "Label used in output filenames (default '<dataset>_prism')."
+          },
+          "depends_on": {
+            "type": "string",
+            "description": "Optional job_id to wait for before starting."
+          }
+        }
+      }
+    },
+    {
+      "name": "create_refinement_config",
+      "description": "NARR only. Write custom_<base>_<type>.yaml next to the base config: the deterministic config plus the Phase-2 refinement sections of NARR_PRISM_<type>.yaml, pointing model.phase1.checkpoint at checkpoint_dir/<case_name>/last.ckpt. run_training_pipeline calls this automatically; use it directly only to inspect or hand-edit a refinement config.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base_config": {
+            "type": "string",
+            "description": "Deterministic NARR config (must define dates.validation)."
+          },
+          "refinement_type": {
+            "type": "string",
+            "enum": ["diffusion_unet", "diffusion_transformer", "flow_matching_unet", "flow_matching_transformer"]
+          },
+          "refiner_attention": {
+            "type": "boolean",
+            "description": "UNet heads only: false drops the bottleneck attention block. Default true.",
+            "default": true
+          }
+        },
+        "required": ["base_config", "refinement_type"]
+      }
+    },
+    {
+      "name": "start_refinement_inference_job",
+      "description": "NARR only. Run tiled deterministic + stochastic ensemble inference with a trained Phase-2 refiner: each member is y_hat + r_hat; writes deterministic, residual, members, ensemble mean and spread per day. Use to re-run inference (e.g. a different ensemble size) without retraining. Supports depends_on.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Refinement YAML (a NARR_PRISM_<type>.yaml template or a custom_*_<type>.yaml)."
+          },
+          "ensemble_size": {
+            "type": "integer",
+            "description": "Ensemble members per day (default from the config)."
+          },
+          "num_gpus": {
+            "type": "integer",
+            "description": "Date-shard workers on visible GPUs.",
+            "default": 1
+          },
+          "split": {
+            "type": "string",
+            "enum": ["inference", "validation"],
+            "default": "inference"
+          },
+          "depends_on": {
+            "type": "string",
+            "description": "Optional job_id to wait for before starting."
+          }
+        },
+        "required": ["config_path"]
+      }
+    },
+    {
+      "name": "start_refinement_evaluation_job",
+      "description": "NARR only. Compare deterministic Prithvi output (y_hat) with the refined ensemble (y_hat + r_hat) on the same dates and grid cells (evaluate_refinement.py), writing metrics, distribution/extreme diagnostics and plots under path_experiment/refinement_evaluation/<case_name>/<type>/. Requires both deterministic and refined daily outputs. Supports depends_on.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Refinement YAML used for refinement inference."
+          },
+          "split": {
+            "type": "string",
+            "enum": ["inference", "validation"],
+            "default": "inference"
+          },
+          "depends_on": {
+            "type": "string",
+            "description": "Optional job_id to wait for before starting."
+          }
+        },
+        "required": ["config_path"]
       }
     },
     {

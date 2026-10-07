@@ -109,6 +109,69 @@ def read_yaml_config(config_path: str = _DEFAULT_CONFIG) -> str:
         return json.dumps({"status": "error", "message": str(exc)})
 
 
+_DATE_SPLITS = ("training", "validation", "inference")
+
+
+def date_range_errors(cfg: dict) -> List[str]:
+    """Problems with a config's dates: training must be set, every range needs
+    start <= end, and training / validation / inference must not overlap."""
+    dates = cfg.get("dates") or {}
+    errors: List[str] = []
+    ranges = {}
+    for split in _DATE_SPLITS:
+        rng = dates.get(split)
+        if not rng:
+            if split == "training":
+                errors.append("dates.training.start and dates.training.end must be set.")
+            continue
+        start, end = rng.get("start"), rng.get("end")
+        if not start or not end:
+            errors.append(f"dates.{split} needs both start and end (got start={start!r}, end={end!r}).")
+            continue
+        try:
+            start_d = datetime.strptime(str(start), "%Y-%m-%d").date()
+            end_d = datetime.strptime(str(end), "%Y-%m-%d").date()
+        except ValueError:
+            errors.append(f"dates.{split} must use YYYY-MM-DD (got {start!r} .. {end!r}).")
+            continue
+        if start_d > end_d:
+            errors.append(f"dates.{split} starts after it ends ({start} > {end}).")
+            continue
+        ranges[split] = (start_d, end_d)
+    names = [s for s in _DATE_SPLITS if s in ranges]
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            (a0, a1), (b0, b1) = ranges[a], ranges[b]
+            if a0 <= b1 and b0 <= a1:
+                errors.append(
+                    f"dates.{a} ({a0}..{a1}) overlaps dates.{b} ({b0}..{b1}); "
+                    "training, validation and inference ranges must be disjoint."
+                )
+    unknown = sorted(set(dates) - set(_DATE_SPLITS))
+    if unknown:
+        errors.append(f"Unknown dates sections {unknown}; use training, validation, inference.")
+    return errors
+
+
+def _set_override(cfg: dict, key: str, value, record) -> None:
+    """Apply one extra_overrides entry. Dotted keys (dates.validation.start) address
+    nested values; dict values merge into existing sections instead of replacing them."""
+    *parents, leaf = key.split(".")
+    node = cfg
+    for part in parents:
+        if not isinstance(node.get(part), dict):
+            node[part] = {}
+        node = node[part]
+    path = key
+    if isinstance(value, dict) and isinstance(node.get(leaf), dict):
+        for sub_key, sub_value in value.items():
+            _set_override(node[leaf], str(sub_key), sub_value,
+                          lambda p, old, new: record(f"{path}.{p}", old, new))
+        return
+    if record(path, node.get(leaf), value):
+        node[leaf] = value
+
+
 def create_custom_yaml(
     base_config: str = _DEFAULT_CONFIG,
     output_name: Optional[str] = None,
@@ -123,6 +186,8 @@ def create_custom_yaml(
     training_end: Optional[str] = None,
     inference_start: Optional[str] = None,
     inference_end: Optional[str] = None,
+    validation_start: Optional[str] = None,
+    validation_end: Optional[str] = None,
     num_gpus: Optional[int] = None,
     predictor_variables: Optional[dict] = None,
     target_variables: Optional[list] = None,
@@ -155,6 +220,8 @@ def create_custom_yaml(
     except Exception as exc:
         return json.dumps({"status": "error", "message": f"Failed to load base config: {exc}"})
 
+    base_cfg_weights = cfg.get("path_model_weights")
+    base_case_name = cfg.get("case_name")
     cfg = copy.deepcopy(cfg)
     changes: list = []
 
@@ -217,6 +284,12 @@ def create_custom_yaml(
         if _record_change("dates.inference.end", old, inference_end):
             cfg.setdefault("dates", {}).setdefault("inference", {})["end"] = inference_end
 
+    for key, val in (("start", validation_start), ("end", validation_end)):
+        if val is not None:
+            old = (cfg.get("dates") or {}).get("validation", {}).get(key)
+            if _record_change(f"dates.validation.{key}", old, val):
+                cfg.setdefault("dates", {}).setdefault("validation", {})[key] = val
+
     # --- distributed training ------------------------------------------------
     if num_gpus is not None:
         old = (cfg.get("training") or {}).get("num_gpus")
@@ -278,9 +351,36 @@ def create_custom_yaml(
     # --- arbitrary extra overrides -------------------------------------------
     if extra_overrides:
         for k, v in extra_overrides.items():
-            old = cfg.get(k)
-            if _record_change(k, old, v):
-                cfg[k] = v
+            _set_override(cfg, str(k), v, _record_change)
+
+    # A new case_name is a new run: never resume another case's checkpoint (the base
+    # config may pin e.g. checkpoints/narr_prism_California/last.ckpt). Auto-resume
+    # still picks up this case's own checkpoint_dir/<case_name>/last.ckpt.
+    if cfg.get("case_name") != base_case_name and (
+        cfg.get("resume_training") or cfg.get("resume_checkpoint_path")
+    ):
+        changes.append(
+            f"resume: not resuming {base_case_name!r}'s checkpoint "
+            f"({cfg.get('resume_checkpoint_path')!r}) for new case {cfg.get('case_name')!r}"
+        )
+        cfg["resume_training"] = False
+        cfg["resume_checkpoint_path"] = None
+        cfg["auto_resume_if_checkpoint_exists"] = True
+
+    # Fine-tuning always starts from the pretrained Prithvi weights; never let an
+    # override drop them (the training code cannot initialise without them).
+    base_weights = base_cfg_weights
+    if not cfg.get("path_model_weights") and base_weights:
+        changes.append(f"path_model_weights: kept pretrained weights {base_weights!r} (cannot be removed)")
+        cfg["path_model_weights"] = base_weights
+
+    date_errors = date_range_errors(cfg)
+    if date_errors:
+        return json.dumps({
+            "status": "error",
+            "message": "Config not written — fix the dates: " + " ".join(date_errors),
+            "dates": cfg.get("dates"),
+        })
 
     # --- machine-local input paths -------------------------------------------
     # Base configs reference the lab server's data paths; point any that do not
