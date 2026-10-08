@@ -1129,13 +1129,17 @@
             "description": "NARR refinement with a UNet head only: false drops the bottleneck attention block (separate custom_<base>_<type>_no_attention.yaml, checkpoints and outputs). Transformer heads are always attention-based. Default true.",
             "default": true
           },
+          "refiner_clip_sample_range": {
+            "type": "number",
+            "description": "Diffusion heads only: clamp the sampler's x0 estimate to +-this many normalized residual units (e.g. 3). Locked into the refiner checkpoint, so it gets its own _clip<range> config, checkpoints and outputs. Use for short smoke-test refiners, which otherwise produce non-physical ensembles."
+          },
           "ensemble_size": {
             "type": "integer",
             "description": "NARR refinement only: ensemble members per day (default from the refinement template, 10)."
           },
           "refinement_epochs": {
             "type": "integer",
-            "description": "NARR refinement only: override the refiner's num_epochs."
+            "description": "NARR refinement only: override the refiner's num_epochs. A refiner checkpoint cannot be resumed with a different epoch count; a new count needs a fresh refinement checkpoint_dir."
           }
         }
       }
@@ -1179,6 +1183,10 @@
             "type": "boolean",
             "description": "UNet heads only: false drops the bottleneck attention block. Default true.",
             "default": true
+          },
+          "refiner_clip_sample_range": {
+            "type": "number",
+            "description": "Diffusion heads only: clamp the sampler's x0 estimate to +-this many normalized residual units; writes a separate _clip<range> variant."
           }
         },
         "required": ["base_config", "refinement_type"]

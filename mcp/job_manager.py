@@ -1636,23 +1636,40 @@ def _refinement_enabled(cfg: dict) -> bool:
     return bool(((cfg.get("model") or {}).get("refinement") or {}).get("enabled"))
 
 
+def _clip_suffix(clip_sample_range: float) -> str:
+    return "clip" + f"{float(clip_sample_range):g}".replace(".", "p")
+
+
 def _refinement_variant(cfg: dict) -> str:
-    """Refinement type, suffixed _no_attention for a UNet head without bottleneck attention."""
+    """Refinement type, suffixed _no_attention for a UNet head without bottleneck attention
+    and _clip<range> for a diffusion head with x0 clipping."""
     refinement = cfg["model"]["refinement"]
     unet = refinement.get("unet") or {}
+    diffusion = refinement.get("diffusion") or {}
+    parts = [refinement["type"]]
     if refinement["type"].endswith("_unet") and unet.get("bottleneck_attention") is False:
-        return f"{refinement['type']}_no_attention"
-    return refinement["type"]
+        parts.append("no_attention")
+    if refinement["type"].startswith("diffusion_") and diffusion.get("clip_sample"):
+        parts.append(_clip_suffix(diffusion.get("clip_sample_range", 10.0)))
+    return "_".join(parts)
 
 
-def create_refinement_config(base_config: str, refinement_type: str, refiner_attention: bool = True) -> str:
+def create_refinement_config(
+    base_config: str,
+    refinement_type: str,
+    refiner_attention: bool = True,
+    refiner_clip_sample_range: Optional[float] = None,
+) -> str:
     """Write custom_<base>_<type>.yaml: the deterministic NARR config plus the Phase-2
     sections of the NARR_PRISM_<type>.yaml template.
 
     The refiner reuses the base config's data, case, scalars and model so it matches
     the Phase-1 checkpoint fine-tuned from that config. refiner_attention=False drops
     the UNet head's bottleneck attention block (custom_<base>_<type>_no_attention.yaml,
-    with its own checkpoint and output directories).
+    with its own checkpoint and output directories). refiner_clip_sample_range (diffusion
+    heads only) clamps the sampler's x0 estimate to +-range normalized residual units; the
+    checkpoint contract records it, so the clipped refiner also gets its own variant
+    (custom_<base>_<type>_clip<range>.yaml, checkpoints and outputs).
     """
     import yaml as _yaml
 
@@ -1671,7 +1688,18 @@ def create_refinement_config(base_config: str, refinement_type: str, refiner_att
             "Transformer refiners are attention-based; refiner_attention=false applies to "
             "diffusion_unet and flow_matching_unet only."
         )})
-    variant = refinement_type if refiner_attention else f"{refinement_type}_no_attention"
+    if refiner_clip_sample_range is not None:
+        if not refinement_type.startswith("diffusion_"):
+            return json.dumps({"status": "error", "message": (
+                "refiner_clip_sample_range applies to diffusion_unet and diffusion_transformer only; "
+                "flow-matching refiners have no x0 clipping."
+            )})
+        if float(refiner_clip_sample_range) <= 0:
+            return json.dumps({"status": "error", "message": "refiner_clip_sample_range must be > 0."})
+    suffixes = [] if refiner_attention else ["no_attention"]
+    if refiner_clip_sample_range is not None:
+        suffixes.append(_clip_suffix(refiner_clip_sample_range))
+    variant = "_".join([refinement_type, *suffixes])
     cfg = _load_config(base_config)
     if not cfg:
         return json.dumps({"status": "error", "message": f"Could not read config {base_config}"})
@@ -1697,7 +1725,9 @@ def create_refinement_config(base_config: str, refinement_type: str, refiner_att
     if not template:
         return json.dumps({"status": "error", "message": f"Refinement template not found: {template_path}"})
 
-    out = _yaml.safe_load(_yaml.safe_dump(cfg))  # deep copy
+    # Deep copy without sorting keys: predictor_variables order is the preprocessed
+    # products' channel order, and the Phase-2 dataset rejects a reordered copy.
+    out = _yaml.safe_load(_yaml.safe_dump(cfg, sort_keys=False))
     for dotted in _REFINEMENT_OVERLAY_KEYS:
         src, dst = template, out
         *parents, leaf = dotted.split(".")
@@ -1713,11 +1743,16 @@ def create_refinement_config(base_config: str, refinement_type: str, refiner_att
     out["model"]["refinement"]["checkpoint"] = None
     if not refiner_attention:
         out["model"]["refinement"]["unet"]["bottleneck_attention"] = False
+    if refiner_clip_sample_range is not None:
+        diffusion = out["model"]["refinement"].setdefault("diffusion", {})
+        diffusion["clip_sample"] = True
+        diffusion["clip_sample_range"] = float(refiner_clip_sample_range)
+    if suffixes:
         output_dir = str((cfg.get("inference") or {}).get("output_dir", "./experiments/inference_output"))
-        out.setdefault("inference", {})["refinement_output_dir"] = f"{output_dir.rstrip('/')}/no_attention"
+        out.setdefault("inference", {})["refinement_output_dir"] = f"{output_dir.rstrip('/')}/{'_'.join(suffixes)}"
     # Same case as the template: keep its checkpoint dir so existing Phase-2 runs resume.
     if case_name == template.get("case_name"):
-        suffix = "" if refiner_attention else "_no_attention"
+        suffix = "".join(f"_{s}" for s in suffixes)
         out["checkpoint_dir"] = f"{str(template['checkpoint_dir']).rstrip('/')}{suffix}"
     else:
         parent = base_checkpoint_dir.rsplit("/", 1)[0] if "/" in base_checkpoint_dir else "."
@@ -1742,6 +1777,7 @@ def create_refinement_config(base_config: str, refinement_type: str, refiner_att
         "config_path": str(out_path),
         "refinement_type": refinement_type,
         "refiner_attention": refiner_attention,
+        "refiner_clip_sample_range": refiner_clip_sample_range,
         "phase1_checkpoint": str(_phase1_checkpoint_path(base_config, cfg)),
         "refinement_checkpoint_dir": str(_repo_path(str(out_path), out["checkpoint_dir"])),
     })
@@ -1799,6 +1835,15 @@ def _require_narr_refinement_config(config_path: str) -> Optional[str]:
 
 def _phase1_checkpoint_for_refinement(config_path: str, cfg: dict) -> Path:
     return _repo_path(config_path, cfg["model"]["phase1"]["checkpoint"])
+
+
+def _refinement_checkpoint_for_inference(config_path: str, cfg: dict) -> Path:
+    """The YAML's model.refinement.checkpoint, else the best refiner that
+    refinement training writes to checkpoint_dir (create_refinement_config leaves it null)."""
+    explicit = (cfg["model"].get("refinement") or {}).get("checkpoint")
+    if explicit:
+        return _repo_path(config_path, explicit)
+    return _repo_path(config_path, cfg["checkpoint_dir"]) / "best.ckpt"
 
 
 def start_phase1_cache_job(
@@ -1871,6 +1916,7 @@ def start_refinement_inference_job(
     args = [
         "infer", "--config", config_path,
         "--phase1-checkpoint", str(_phase1_checkpoint_for_refinement(config_path, cfg)),
+        "--refinement-checkpoint", str(_refinement_checkpoint_for_inference(config_path, cfg)),
         "--split", split, "--num-gpus", str(num_gpus), "--resume-existing", "--no-progress",
     ]
     if ensemble_size:
@@ -1922,6 +1968,7 @@ def run_training_pipeline(
     refiner_attention: bool = True,
     ensemble_size: Optional[int] = None,
     refinement_epochs: Optional[int] = None,
+    refiner_clip_sample_range: Optional[float] = None,
 ) -> str:
     """Queue the full case-scoped workflow in dependency order (README order):
 
@@ -1994,7 +2041,8 @@ def run_training_pipeline(
 
     refinement_config = None
     if refinement_type:
-        created = json.loads(create_refinement_config(config_path, refinement_type, refiner_attention))
+        created = json.loads(create_refinement_config(
+            config_path, refinement_type, refiner_attention, refiner_clip_sample_range))
         if created.get("status") != "ok":
             return json.dumps({"status": "error", "stage": "refinement_config", "message": created.get("message")})
         refinement_config = created["config_path"]

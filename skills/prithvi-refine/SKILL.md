@@ -14,19 +14,24 @@ Phase 1 is the deterministic Prithvi-UNet fine-tune (`prithvi-downscale`), givin
 3. Ask which refiner head, if the user did not say:
    - `diffusion_unet` / `flow_matching_unet`: convolutional UNet refiner with a bottleneck attention block; `refiner_attention: false` gives the variant without attention blocks (own config, checkpoints and outputs)
    - `diffusion_transformer` / `flow_matching_transformer`: attention-based transformer refiner
-4. `preflight_check` with `stage: training`, then confirm with the user: base config, head, ensemble size (default 10), refiner epochs, GPUs, and whether Phase 1 must be trained. If `checkpoint_dir/<case_name>/last.ckpt` already exists and they only want refinement, use `train_phase1: false`.
-5. `run_training_pipeline` with `config_path`, `refinement_type`, and optionally `refiner_attention`, `ensemble_size`, `refinement_epochs`, `num_gpus`, `train_phase1`. After the deterministic stages (preprocessing → scalars → training → tiled inference → evaluation) it queues:
+4. `preflight_check` with `stage: training`, then confirm with the user: base config, head, ensemble size (default 10), refiner epochs, GPUs, and whether Phase 1 must be trained. If `checkpoint_dir/<case_name>/last.ckpt` already exists and they only want refinement, use `train_phase1: false`. Pick the refiner epoch count now: a refiner cannot be resumed with a different `refinement_epochs`. Give the user the playbook's cost table first; a full year is days of GPU time.
+5. `run_training_pipeline` with `config_path`, `refinement_type`, and optionally `refiner_attention`, `ensemble_size`, `refinement_epochs`, `refiner_clip_sample_range` (diffusion heads), `num_gpus`, `train_phase1`. After the deterministic stages (preprocessing → scalars → training → tiled inference → evaluation) it queues:
    1. `phase1_cache`: frozen Phase 1 run once over training and validation dates; caches y_hat and training-only residual statistics
    2. `refinement_training`: learns the residual; Prithvi stays frozen; resumes from `last.ckpt` if present
-   3. `refinement_inference`: daily deterministic, residual, members, ensemble mean and spread
-   4. `refinement_evaluation`: deterministic vs refined on the same dates and grid cells
-   It writes `custom_<base>_<type>.yaml` next to the base config and returns its path.
+   3. `refinement_inference`: daily deterministic, residual, members, ensemble mean and spread, from the refiner's `best.ckpt`
+   4. `refinement_evaluation`: deterministic vs refined on the same dates and grid cells; Phase 1 is scored from the baseline embedded in the refined files
+   It writes `custom_<base>_<variant>.yaml` next to the base config and returns its path (variant = head plus `_no_attention` and/or `_clip<range>`).
 6. Monitor with `get_job_status` / `list_jobs`. To re-run only the ensemble (e.g. a different `ensemble_size`) or only the comparison, use `start_refinement_inference_job` / `start_refinement_evaluation_job` with that refinement YAML.
 7. Report the `refinement_evaluation` metrics (RMSE, bias, correlation, spread and extremes) for deterministic vs refined, then hand off to `prithvi-analyze`.
+
+## Quick end-to-end check
+
+When the user wants to know whether everything works, or asks for fewer epochs or a faster test, run the playbook's smoke test instead of shortening the real case: a new `<case>_smoke` case with one training month and one validation and inference week, `num_epochs: 2`, `extra_overrides: {"limit_steps_train": 300, "limit_steps_valid": 20}`, then `run_training_pipeline` with `refinement_epochs: 20`, `ensemble_size: 4`, `save_every: 1` and, for diffusion heads, `refiner_clip_sample_range: 3`. About 1.5 h on one GPU after downloads; its metrics are meaningless. Without clipping, a briefly trained diffusion refiner produces non-physical ensembles and refinement inference stops on its range check.
 
 ## Rules
 
 - MERRA-2 has no refinement. Offer the deterministic pipeline instead.
 - Do not say refinement improved the result until `refinement_evaluation` has finished, and report where the refined ensemble is worse as well as better.
 - Residual statistics come from training dates only; never refit them on validation or inference dates.
+- A refiner checkpoint cannot be resumed with a different `refinement_epochs`, and clipping is part of its checkpoint contract. A new epoch count or clip setting needs a fresh refinement `checkpoint_dir`; ask before moving the old one aside, and never delete it.
 - Preprocessed data a case directory links to from another checkout is read-only: the job manager refuses preprocessing and scalars jobs that would write through it. Use a new `case_name` to preprocess new data.

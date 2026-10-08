@@ -365,6 +365,7 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
             refiner_attention=bool(arguments.get("refiner_attention", True)),
             ensemble_size=arguments.get("ensemble_size"),
             refinement_epochs=arguments.get("refinement_epochs"),
+            refiner_clip_sample_range=arguments.get("refiner_clip_sample_range"),
         )
 
     elif tool_name == "start_evaluation_job":
@@ -379,6 +380,7 @@ def process_tool_call(tool_name: str, arguments: Dict[str, Any], analyzer: MERRA
             base_config=arguments.get("base_config", ""),
             refinement_type=arguments.get("refinement_type", ""),
             refiner_attention=bool(arguments.get("refiner_attention", True)),
+            refiner_clip_sample_range=arguments.get("refiner_clip_sample_range"),
         )
 
     elif tool_name == "start_refinement_inference_job":

@@ -3,7 +3,7 @@ type: Reference
 title: MCP pipeline tools
 description: MCP tools for downloads, YAML configs, preprocessing, scalars, training, inference, evaluation, NARR refinement, and jobs.
 tags: [mcp, tools, pipeline, training, inference]
-timestamp: 2026-10-01T06:00:00Z
+timestamp: 2026-10-08T00:00:00Z
 resource: repo://mcp/mcp-merra2-config.json
 ---
 
@@ -28,8 +28,8 @@ Tools used by the [Downscale playbook](/playbooks/downscale-wxc.md). Exact schem
 | `run_training_pipeline` | Preproc(train)→scalars→preproc(val/infer)→fine-tune→tiled inference→evaluation; NARR `refinement_type` adds Phase-2 refinement |
 | `start_inference_job` | Inference-only job |
 | `start_evaluation_job` | Evaluate inference vs PRISM on the exact grid (`evaluate_prism_inference.py`) |
-| `create_refinement_config` | NARR: write `custom_<base>_<type>.yaml` (base config + refinement sections) |
-| `start_refinement_inference_job` | NARR: ensemble inference (y_hat + r_hat, mean, spread) with a trained refiner |
+| `create_refinement_config` | NARR: write `custom_<base>_<variant>.yaml` (base config + refinement sections; `refiner_attention`, `refiner_clip_sample_range` select the variant) |
+| `start_refinement_inference_job` | NARR: ensemble inference (y_hat + r_hat, mean, spread) with the refiner's `best.ckpt` |
 | `start_refinement_evaluation_job` | NARR: deterministic vs refined metrics (`evaluate_refinement.py`) |
 | `get_job_status` / `list_jobs` / `cancel_job` | Job lifecycle |
 | `get_gpu_status` | GPU availability |
