@@ -1365,7 +1365,11 @@ def _overlapping_download(dataset: str, start: Optional[str], end: Optional[str]
             return job["job_id"]  # undated outputs (weights, code, env, elevation): one writer at a time
         args = job.get("args") or []
         s2, e2 = _arg(args, "--start"), _arg(args, "--end")
-        if not (start and end and s2 and e2) or (start <= e2 and s2 <= end):
+        if not (start and end and s2 and e2):
+            return job["job_id"]
+        # NARR files are monthly, so ranges sharing a month write the same file.
+        width = 7 if shared == {"narr"} else 10
+        if start[:width] <= e2[:width] and s2[:width] <= end[:width]:
             return job["job_id"]
     return None
 

@@ -15,6 +15,9 @@ GRANITE_WXC_PYTHON, plus the weights (or MODEL_WEIGHTS_FILE). About 1.5 h on
 one A100-class GPU after downloads.
 
     python tests/e2e_narr_refine_smoke.py --root ~/prithvi-wxc-data
+
+On a host whose base config paths (/data2/NARR, /data/PRISM) exist, pass
+--force-local so the run reads the downloaded data instead.
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ def main() -> int:
     ap.add_argument("--refinement-type", default="diffusion_unet",
                     choices=["diffusion_unet", "diffusion_transformer", "flow_matching_unet",
                              "flow_matching_transformer"])
+    ap.add_argument("--force-local", action="store_true",
+                    help="Pretend the base config's data paths do not exist (testing on a host that has them)")
     args = ap.parse_args()
     root = Path(args.root).expanduser().resolve()
 
@@ -78,9 +83,18 @@ def main() -> int:
             check(status["status"] == "done", f"download {job['job_id']} done", status.get("log_tail"))
 
         base = root / "code" / "Prithvi-UNet-stocahstic" / "examples" / "NARR_PRISM" / "NARR_PRISM_subdomain.yaml"
+        case_name = "mcp_narr_refine_smoke"
+        if args.force_local:
+            foreign = base.with_name("custom_narr_smoke_foreign_paths.yaml")
+            text = base.read_text()
+            for lab in ("/data/merra2/", "/data/PRISM/", "/data2/NARR/"):
+                text = text.replace(lab, "/nonexistent" + lab)
+            foreign.write_text(text)
+            base = foreign
+            case_name += "_local"
         made, err = client.call(
-            "create_custom_yaml", base_config=str(base), output_name="narr_refine_smoke",
-            case_name="mcp_narr_refine_smoke", num_epochs=2, num_gpus=args.num_gpus,
+            "create_custom_yaml", base_config=str(base), output_name=f"{case_name}_config",
+            case_name=case_name, num_epochs=2, num_gpus=args.num_gpus,
             training_start=TRAINING[0], training_end=TRAINING[1],
             validation_start=VALIDATION[0], validation_end=VALIDATION[1],
             inference_start=INFERENCE[0], inference_end=INFERENCE[1],
@@ -88,6 +102,10 @@ def main() -> int:
         check(not err, "smoke config created", made)
         cfg = made["config_path"]
         print("    changes:", *made["changes"], sep="\n      ")
+        if args.force_local:
+            localized = " ".join(made["changes"])
+            check("data.predictor_dir" in localized and "data.target_dir" in localized,
+                  "NARR and PRISM paths point at the downloaded data", made["changes"])
 
         pre, _ = client.call("preflight_check", config_path=cfg, stage="training")
         check(pre["ok"], "preflight passes", pre)

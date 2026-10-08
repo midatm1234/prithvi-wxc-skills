@@ -149,10 +149,14 @@ def download_narr(start: str, end: str, overwrite: bool = False) -> dict:
     out_dir = C.narr_dir()
     root = out_dir.parent
     cfg = yaml.safe_load(src_yaml.read_text()) or {}
-    cfg.setdefault("download", {})["out_dir"] = str(root / "raw")
+    download = cfg.setdefault("download", {})
+    download["out_dir"] = str(root / "raw")
+    # download_narr.py prefers the YAML's start/end over --start/--end, and the
+    # bundled YAML spans the whole archive, so the requested range goes in here.
+    download["start"], download["end"] = start, end
     cfg.setdefault("subset", {})["out_dir"] = str(out_dir)
     root.mkdir(parents=True, exist_ok=True)
-    run_yaml = root / "narr_daily_subset.yaml"
+    run_yaml = root / f"narr_daily_subset_{start}_{end}.yaml"
     run_yaml.write_text(yaml.safe_dump(cfg, sort_keys=False))
     cmd = [PYTHON_JOB, str(script), "--config", str(run_yaml), "--start", start, "--end", end]
     if overwrite:
